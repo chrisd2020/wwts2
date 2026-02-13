@@ -425,6 +425,19 @@
         }
 
         // --- HOST ACTIONS ---
+        
+        // New: Track Selection State
+        let selectedPlaylistUri = null;
+
+        window.selectPlaylist = (uri, name, img) => {
+             if(!deviceId) return alert("Player not ready.");
+             selectedPlaylistUri = uri;
+             
+             // Visual Feedback without playing
+             document.getElementById('track-name').innerText = name;
+             document.getElementById('artist-name').innerText = "Ready to Start";
+             document.getElementById('album-art').innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
+        };
 
         window.hostStartRound = async () => {
             const appId = window.__app_id || 'wwts-game'; 
@@ -445,8 +458,19 @@
 
             if(player) {
                 await player.setVolume(0.8);
-                await player.seek(0);
-                await player.resume();
+                
+                if (selectedPlaylistUri) {
+                    // Start the queued playlist
+                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ context_uri: selectedPlaylistUri })
+                    });
+                    selectedPlaylistUri = null; // Clear queue
+                } else {
+                    // Just resume/restart current
+                    await player.seek(0);
+                    await player.resume();
+                }
             }
         };
 
@@ -831,19 +855,18 @@
             });
             const data = await res.json();
             
-            // Fix: Check if playlists exist and filter out null items
             if (!data.playlists || !data.playlists.items) {
                  document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>';
                  return;
             }
 
             document.getElementById('results').innerHTML = data.playlists.items
-                .filter(p => p !== null) // Filter out null items from Spotify API
+                .filter(p => p !== null)
                 .map(p => {
-                    // Safety check for images
                     const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
+                    const safeName = p.name.replace(/'/g, "\\'"); 
                     return `
-                    <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
+                    <div onclick="selectPlaylist('${p.uri}', '${safeName}', '${imgUrl}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
                         <img src="${imgUrl}" class="w-10 h-10 rounded shadow object-cover">
                         <div class="min-w-0">
                             <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
@@ -853,13 +876,7 @@
                 `}).join('');
         };
 
-        window.playPlaylist = async (uri) => {
-             if(!deviceId) return alert("Player not ready.");
-             await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ context_uri: uri })
-            });
-        };
+        // Old playPlaylist function replaced by selectPlaylist above
 
         // Settings Toggles
         document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
