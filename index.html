@@ -89,8 +89,6 @@
             if(!input) return alert("Please paste the config JSON.");
             
             try {
-                // Try to parse to ensure it's valid JSON
-                // Users might paste "const firebaseConfig = { ... };" so we try to clean it
                 let jsonStr = input;
                 if (input.includes('=')) {
                     jsonStr = input.substring(input.indexOf('=') + 1);
@@ -115,30 +113,46 @@
 
         window.createRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
+            
+            // Visual Feedback
+            const btn = document.getElementById('createRoomBtn');
+            const originalText = btn.innerText;
+            btn.innerText = "Creating...";
+            btn.disabled = true;
+
             const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-            
-            // Use a default App ID if not provided by environment
             const appId = window.__app_id || 'wwts-game'; 
-            
             roomId = newRoomId;
             
-            // Create Room Doc (Added 'rooms' subcollection segment)
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await setDoc(roomRef, {
-                hostId: user.uid,
-                status: 'lobby', // lobby, playing, cut, revealed
-                track: null,
-                createdAt: serverTimestamp(),
-                players: []
-            });
+            try {
+                // Create Room Doc
+                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                console.log("Attempting to write to:", roomRef.path);
 
-            // Switch UI
-            document.getElementById('lobby-screen').classList.add('hidden');
-            document.getElementById('host-screen').classList.remove('hidden');
-            document.getElementById('roomCodeDisplay').innerText = roomId;
-            
-            // Listen to Room
-            subscribeToRoom(roomId, 'host');
+                await setDoc(roomRef, {
+                    hostId: user.uid,
+                    status: 'lobby', 
+                    track: null,
+                    createdAt: serverTimestamp(),
+                    players: []
+                });
+
+                console.log("Room Created!");
+
+                // Switch UI
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('host-screen').classList.remove('hidden');
+                document.getElementById('roomCodeDisplay').innerText = roomId;
+                
+                // Listen to Room
+                subscribeToRoom(roomId, 'host');
+
+            } catch(e) {
+                console.error("Create Room Error:", e);
+                alert("Error creating room:\n" + e.message + "\n\nCHECK: Did you enable Firestore in Test Mode (public)?");
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
         };
 
         window.joinRoom = async () => {
@@ -150,37 +164,51 @@
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
 
-            // Fix Path: Added 'rooms'
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${code}`);
-            const snap = await getDoc(roomRef);
+            const btn = document.getElementById('joinBtn');
+            const originalText = btn.innerText;
+            btn.innerText = "Joining...";
+            btn.disabled = true;
 
-            if(!snap.exists()) return alert("Room not found!");
+            try {
+                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${code}`);
+                const snap = await getDoc(roomRef);
 
-            // Add Player to List
-            const playerData = {
-                id: user.uid,
-                name: name,
-                buzzedAt: null,
-                score: 0
-            };
-            
-            await updateDoc(roomRef, {
-                players: arrayUnion(playerData)
-            });
+                if(!snap.exists()) {
+                    alert("Room not found!");
+                    btn.innerText = originalText;
+                    btn.disabled = false;
+                    return;
+                }
 
-            roomId = code;
-            document.getElementById('lobby-screen').classList.add('hidden');
-            document.getElementById('player-screen').classList.remove('hidden');
-            document.getElementById('player-room-code').innerText = code;
-            document.getElementById('player-name-display').innerText = name;
+                const playerData = {
+                    id: user.uid,
+                    name: name,
+                    buzzedAt: null,
+                    score: 0
+                };
+                
+                await updateDoc(roomRef, {
+                    players: arrayUnion(playerData)
+                });
 
-            subscribeToRoom(code, 'player');
+                roomId = code;
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('player-screen').classList.remove('hidden');
+                document.getElementById('player-room-code').innerText = code;
+                document.getElementById('player-name-display').innerText = name;
+
+                subscribeToRoom(code, 'player');
+            } catch(e) {
+                console.error("Join Error:", e);
+                alert("Error joining room:\n" + e.message);
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
         };
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
             const appId = window.__app_id || 'wwts-game'; 
-            // Fix Path: Added 'rooms'
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
@@ -198,7 +226,6 @@
             const grid = document.getElementById('playerGrid');
             const players = data.players || [];
             
-            // Sort by buzz time if available
             players.sort((a, b) => {
                 if (a.buzzedAt && b.buzzedAt) return a.buzzedAt - b.buzzedAt;
                 if (a.buzzedAt) return -1; 
@@ -221,7 +248,6 @@
                 </div>
             `}).join('');
 
-            // Sync Game Status
             const cutBtn = document.getElementById('cutMusicBtn');
             if (data.status === 'playing') {
                 cutBtn.innerText = "CUT MUSIC!";
@@ -242,23 +268,26 @@
         window.hostSetStatus = async (status) => {
             if(!roomId) return;
             const appId = window.__app_id || 'wwts-game'; 
-            // Fix Path: Added 'rooms'
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await updateDoc(roomRef, { status: status });
             
-            // If resetting, clear buzzes
-            if(status === 'playing' || status === 'lobby') {
-                 const snap = await getDoc(roomRef);
-                 const players = snap.data().players || [];
-                 const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
-                 await updateDoc(roomRef, { players: resetPlayers });
+            try {
+                await updateDoc(roomRef, { status: status });
+                
+                if(status === 'playing' || status === 'lobby') {
+                     const snap = await getDoc(roomRef);
+                     const players = snap.data().players || [];
+                     const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
+                     await updateDoc(roomRef, { players: resetPlayers });
+                }
+            } catch(e) {
+                console.error("Host Status Error", e);
+                alert("Error updating game state: " + e.message);
             }
         };
 
         window.awardWin = async (winnerId) => {
-             // Logic to increment score could go here
              alert("Winner selected! Resetting round...");
-             window.hostSetStatus('lobby'); // Go back to lobby to pick next song
+             window.hostSetStatus('lobby');
         };
 
         // --- PLAYER LOGIC ---
@@ -277,7 +306,6 @@
                 statusEl.innerText = "SING!";
                 statusEl.className = "text-4xl font-black text-red-500";
                 
-                // Check if I already buzzed
                 const myData = data.players.find(p => p.id === user.uid);
                 if (myData && myData.buzzedAt) {
                     buzzBtn.innerText = "BUZZED!";
@@ -287,7 +315,6 @@
                     buzzBtn.innerText = "BUZZ!";
                     buzzBtn.disabled = false;
                     buzzBtn.className = "w-64 h-64 rounded-full bg-red-600 text-white font-black text-4xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                    // Vibrate phone
                     if(navigator.vibrate) navigator.vibrate(200);
                 }
             } else {
@@ -301,12 +328,10 @@
 
         window.playerBuzz = async () => {
             if(!roomId || !user) return;
-            // Optimistic UI
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
             const appId = window.__app_id || 'wwts-game'; 
-            // Fix Path: Added 'rooms'
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
             try {
@@ -375,14 +400,6 @@
             <div id="error-screen" class="hidden text-center">
                 <div class="text-red-500 font-bold mb-2 text-xl">Connection Error</div>
                 <p id="error-message" class="text-xs text-red-300 bg-red-900/20 p-2 rounded mb-4 break-all">Error details...</p>
-                <div class="text-xs text-gray-400 mb-4 text-left p-3 border border-white/10 rounded">
-                    <strong>Possible Fixes:</strong>
-                    <ul class="list-disc ml-4 mt-1 space-y-1">
-                        <li>Did you enable <strong>"Anonymous"</strong> sign-in in Firebase Console > Authentication?</li>
-                        <li>Is your config JSON correct?</li>
-                        <li>Is your Project ID correct?</li>
-                    </ul>
-                </div>
                 <button onclick="clearFirebaseConfig()" class="w-full bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-3 rounded-lg">
                     Reset Configuration
                 </button>
@@ -391,13 +408,15 @@
             <!-- STATE: Setup (Missing Config) -->
             <div id="lobby-setup" class="hidden text-center">
                 <h3 class="text-xl font-bold text-white mb-2">Setup Multiplayer</h3>
-                <p class="text-xs text-gray-400 mb-4 text-left">
-                    To play online, this app needs a Firebase database. <br><br>
-                    1. Go to <a href="https://console.firebase.google.com" target="_blank" class="text-yellow-400 underline">Firebase Console</a><br>
-                    2. <strong>Enable Auth:</strong> Authentication > Sign-in method > Enable Anonymous<br>
-                    3. <strong>Get Config:</strong> Project Settings > General > SDK Setup<br>
-                    4. Copy the <code>firebaseConfig</code> object and paste below:
-                </p>
+                <div class="text-xs text-gray-400 mb-4 text-left border border-white/10 p-3 rounded">
+                    <strong>Instructions:</strong>
+                    <ol class="list-decimal ml-4 space-y-1 mt-1">
+                        <li>Go to <a href="https://console.firebase.google.com" target="_blank" class="text-yellow-400 underline">Firebase Console</a></li>
+                        <li><strong>Auth:</strong> Sign-in method > Enable Anonymous</li>
+                        <li><strong>Database:</strong> Firestore Database > Create > <strong>Test Mode</strong></li>
+                        <li><strong>Config:</strong> Project Settings > General > Copy config object</li>
+                    </ol>
+                </div>
                 <textarea id="firebaseConfigInput" rows="6" class="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[10px] font-mono text-green-400 focus:border-yellow-400 outline-none mb-4" placeholder='{ "apiKey": "...", "authDomain": "...", ... }'></textarea>
                 <button onclick="saveFirebaseConfig()" class="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200">Save Configuration</button>
             </div>
@@ -410,7 +429,7 @@
                     <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
                     <div class="flex gap-2">
                         <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
-                        <button onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">
+                        <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">
                             Join Game
                         </button>
                     </div>
@@ -423,7 +442,7 @@
                 </div>
 
                 <!-- Create Section -->
-                <button onclick="createRoom()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold py-4 rounded-xl uppercase tracking-wide shadow-lg transition transform hover:scale-105">
+                <button id="createRoomBtn" onclick="createRoom()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold py-4 rounded-xl uppercase tracking-wide shadow-lg transition transform hover:scale-105">
                     Host New Game
                 </button>
             </div>
