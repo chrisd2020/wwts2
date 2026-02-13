@@ -359,8 +359,9 @@
              
              if (code) {
                  await exchangeToken(code);
-                 // Clean URL
-                 window.history.replaceState({}, document.title, window.location.pathname);
+             } else {
+                 // Only check hash for old impl legacy cleanup, do nothing
+                 if(window.location.hash.includes('access_token')) window.location.hash = '';
              }
 
              // 2. Load stored token
@@ -377,6 +378,7 @@
                 if(input) input.value = storedId;
              }
              
+             // Canonical Redirect URI (always consistent)
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
              document.getElementById('redirectUriDisplay').innerText = redirect;
         });
@@ -387,11 +389,14 @@
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             
             const verifier = generateRandomString(128);
-            await generateCodeChallenge(verifier); // Generate
+            await generateCodeChallenge(verifier); // Warmup
             const challenge = await generateCodeChallenge(verifier);
             localStorage.setItem("wwts_verifier", verifier);
-
+            
+            // Generate and STORE the exact redirect URI we are using
             const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+            localStorage.setItem("wwts_redirect_uri", redirectUri);
+
             const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
             
             const args = new URLSearchParams({
@@ -409,7 +414,13 @@
         async function exchangeToken(code) {
             const verifier = localStorage.getItem("wwts_verifier");
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
-            const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+            
+            // Use stored URI to match exactly what was sent in step 1
+            let redirectUri = localStorage.getItem("wwts_redirect_uri");
+            if (!redirectUri) {
+                // Fallback
+                redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+            }
 
             const params = new URLSearchParams({
                 client_id: clientId,
@@ -430,9 +441,20 @@
                 if (data.access_token) {
                     localStorage.setItem('wwts_host_token', data.access_token);
                     token = data.access_token;
-                    location.reload(); // Reload to clear params and restore state
+                    
+                    // Cleanup
+                    localStorage.removeItem("wwts_verifier");
+                    localStorage.removeItem("wwts_redirect_uri");
+                    
+                    // CRITICAL FIX: Redirect to clean URL to prevent re-using code on reload
+                    window.location.href = redirectUri;
                 } else {
-                    alert("Token Error: " + data.error_description);
+                    // Only alert if it's NOT the "invalid grant" error caused by double-load
+                    if (data.error !== 'invalid_grant') {
+                        alert("Token Error: " + (data.error_description || data.error));
+                    }
+                    // Clean URL regardless to prevent getting stuck
+                    window.history.replaceState({}, document.title, redirectUri);
                 }
             } catch(e) { console.error(e); }
         }
