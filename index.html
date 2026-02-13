@@ -109,9 +109,12 @@
             <div class="text-left space-y-1">
                 <label class="text-xs text-gray-400 uppercase font-bold ml-1">Spotify Client ID</label>
                 <input type="text" id="clientIdInput" placeholder="Paste Client ID from Dashboard" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm focus:border-green-500 outline-none transition font-mono text-green-300">
-                <p class="text-[10px] text-gray-500 leading-tight ml-1">
-                    Don't have one? <a href="https://developer.spotify.com/dashboard" target="_blank" class="underline hover:text-white">Create App</a> & add <span id="redirectUriDisplay" class="font-mono text-white/70 bg-white/10 px-1 rounded select-all cursor-pointer">...</span> to Redirect URIs.
-                </p>
+                
+                <div class="mt-4 p-3 bg-white/5 rounded border border-white/10">
+                    <label class="block text-[10px] text-gray-400 uppercase font-bold mb-1">Required Redirect URI</label>
+                    <p class="text-xs text-gray-500 mb-1">Add this exact URL to your Spotify Dashboard:</p>
+                    <div id="redirectUriDisplay" class="font-mono text-green-300 text-xs break-all bg-black/30 p-2 rounded select-all cursor-text border border-white/5">...</div>
+                </div>
             </div>
 
             <button onclick="startLogin()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
@@ -306,7 +309,7 @@
             if (params.get('error')) {
                 const errorMsg = params.get('error');
                 console.error("WWTS Debug: Auth Error in Hash:", errorMsg);
-                alert("Spotify Login Error: " + errorMsg + "\n\nPlease check your Client ID and Redirect URI.");
+                alert("Spotify Login Error: " + errorMsg + "\n\nPlease check your Client ID and Redirect URI in the Dashboard.");
                 // Clear hash to prevent loops and let user try again
                 window.history.replaceState(null, null, ' ');
                 initLoginView();
@@ -348,11 +351,6 @@
                 renderPlayers();
             } else {
                 console.log("WWTS Debug: No token found, showing login.");
-                // Check for errors in query params (Auth Code errors appear here)
-                const searchParams = new URLSearchParams(window.location.search);
-                if (searchParams.get('error')) {
-                    alert("Spotify Login Error: " + searchParams.get('error'));
-                }
                 initLoginView();
             }
         }
@@ -361,12 +359,12 @@
             const storedId = localStorage.getItem(CLIENT_ID_KEY);
             if(storedId) document.getElementById('clientIdInput').value = storedId;
             
-            // Show the exact redirect URI being used
-            // Uses standard window properties to construct current path
-            let redirect = window.location.origin + window.location.pathname;
-            
-            // Ensure no trailing index.html for display consistency
+            // CLEAN REDIRECT URI Calculation
+            let redirect = window.location.href.split('#')[0].split('?')[0];
             redirect = redirect.replace('index.html', '');
+            if (redirect.endsWith('/')) {
+                // Good, standard
+            }
             
             // Display the redirect URI for user to copy
             document.getElementById('redirectUriDisplay').innerText = redirect;
@@ -374,30 +372,46 @@
 
         window.startLogin = () => {
             const clientIdInput = document.getElementById('clientIdInput').value.trim();
-            // Remove any non-alphanumeric chars just in case of weird copy-paste invisible chars
             const clientId = clientIdInput.replace(/[^a-zA-Z0-9]/g, '');
 
             if(!clientId) return alert("Please enter a Client ID from the Spotify Developer Dashboard.");
             
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             
-            // CLEAN REDIRECT URI: Origin + Pathname (No query, no hash)
-            // Example: https://chrisd2020.github.io/wwts2/
-            let redirectUri = window.location.origin + window.location.pathname;
-            
-            // Remove trailing 'index.html' if present to avoid mismatches
+            // 1. Determine Redirect URI
+            let redirectUri = window.location.href.split('#')[0].split('?')[0];
             redirectUri = redirectUri.replace('index.html', '');
             
-            // Ensure no double slashes at end if pathname was just /
-            // (e.g., origin/ + /) -> origin// -> origin/
-            redirectUri = redirectUri.replace(/([^:]\/)\/+/g, "$1");
+            console.log("WWTS Debug: Redirect URI:", redirectUri);
 
-            console.log("WWTS Debug: Redirecting to:", redirectUri);
+            // 2. Define Scopes
+            const scopes = [
+                'streaming',
+                'user-read-email',
+                'user-read-private',
+                'user-read-playback-state',
+                'user-modify-playback-state'
+            ].join(' ');
 
-            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            // 3. Construct URL using URL object to guarantee correct encoding
+            const url = new URL("https://accounts.spotify.com/authorize");
+            url.searchParams.append("client_id", clientId);
+            url.searchParams.append("response_type", "token");
+            url.searchParams.append("redirect_uri", redirectUri);
             
-            // MANUAL URL CONSTRUCTION (Fixes unsupported_response_type by ensuring %20 encoding)
-            const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&show_dialog=true`;
+            // Note: URLSearchParams encodes space as '+', but Spotify strictly prefers '%20' for scopes in some contexts.
+            // We append scope manually to be safe, or replace '+' later.
+            // Let's rely on standard object first, but if it fails, we replace.
+            
+            url.searchParams.append("scope", scopes);
+            url.searchParams.append("show_dialog", "true");
+
+            // WORKAROUND: Replace '+' with '%20' in the final string for the scope parameter
+            // Spotify's strict parser sometimes rejects '+' in scopes.
+            let authUrl = url.toString();
+            authUrl = authUrl.replace(/\+/g, '%20');
+
+            console.log("WWTS Debug: Final Auth URL:", authUrl);
             
             window.location.href = authUrl;
         };
