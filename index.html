@@ -22,16 +22,10 @@
         // 1. Try to get config from Environment (Canvas) OR LocalStorage (GitHub Pages)
         function getFirebaseConfig() {
             try {
-                // First check environment (Canvas)
-                if (window.__firebase_config) {
-                    return JSON.parse(window.__firebase_config);
-                }
-                // Then check LocalStorage (Self-hosted)
+                if (window.__firebase_config) return JSON.parse(window.__firebase_config);
                 const stored = localStorage.getItem('wwts_firebase_config');
                 if (stored) return JSON.parse(stored);
-            } catch (e) {
-                console.error("Config Parsing Error:", e);
-            }
+            } catch (e) { console.error("Config Parsing Error:", e); }
             return null;
         }
 
@@ -44,7 +38,6 @@
             const config = getFirebaseConfig();
             
             if (!config || !config.apiKey) {
-                console.warn("No valid Firebase Config found. Showing setup screen.");
                 document.getElementById('lobby-loading').classList.add('hidden');
                 document.getElementById('lobby-setup').classList.remove('hidden');
                 return;
@@ -54,67 +47,77 @@
                 app = initializeApp(config);
                 auth = getAuth(app);
                 db = getFirestore(app);
-                
                 await signInAnonymously(auth);
                 
-                onAuthStateChanged(auth, (u) => {
+                onAuthStateChanged(auth, async (u) => {
                     user = u;
                     if(user) {
                         console.log("Firebase Auth: ", user.uid);
                         isFirebaseReady = true;
-                        // Show Main Lobby
-                        document.getElementById('lobby-loading').classList.add('hidden');
-                        document.getElementById('lobby-setup').classList.add('hidden');
-                        document.getElementById('lobby-main').classList.remove('hidden');
+                        
+                        // Check if we need to restore a session (Host returned from Spotify)
+                        const savedRoomId = localStorage.getItem('wwts_active_room_id');
+                        
+                        if (savedRoomId) {
+                            console.log("Restoring session for room:", savedRoomId);
+                            // Verify room exists
+                            const appId = window.__app_id || 'wwts-game';
+                            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
+                            const snap = await getDoc(roomRef);
+                            
+                            if (snap.exists() && snap.data().hostId === user.uid) {
+                                // Restore Host View
+                                roomId = savedRoomId;
+                                document.getElementById('lobby-loading').classList.add('hidden');
+                                document.getElementById('lobby-setup').classList.add('hidden');
+                                document.getElementById('lobby-main').classList.add('hidden');
+                                document.getElementById('host-screen').classList.remove('hidden');
+                                document.getElementById('roomCodeDisplay').innerText = roomId;
+                                subscribeToRoom(roomId, 'host');
+                            } else {
+                                // Invalid session, clear it
+                                localStorage.removeItem('wwts_active_room_id');
+                                showMainLobby();
+                            }
+                        } else {
+                            showMainLobby();
+                        }
                     }
                 });
             } catch(e) { 
                 console.error("Firebase Init Error", e); 
-                
-                // Show Error UI
                 document.getElementById('lobby-loading').classList.add('hidden');
                 document.getElementById('error-screen').classList.remove('hidden');
                 document.getElementById('error-message').innerText = e.message;
             }
         }
 
-        // Initialize on Load
+        function showMainLobby() {
+            document.getElementById('lobby-loading').classList.add('hidden');
+            document.getElementById('lobby-setup').classList.add('hidden');
+            document.getElementById('lobby-main').classList.remove('hidden');
+        }
+
         initFirebase();
 
-        // --- GLOBAL EXPORTS FOR HTML ---
+        // --- GLOBAL EXPORTS ---
         
-        // Configuration Helper
         window.saveFirebaseConfig = () => {
             const input = document.getElementById('firebaseConfigInput').value.trim();
             if(!input) return alert("Please paste the config JSON.");
-            
             try {
-                let jsonStr = input;
-                if (input.includes('=')) {
-                    jsonStr = input.substring(input.indexOf('=') + 1);
-                }
-                if (jsonStr.endsWith(';')) {
-                    jsonStr = jsonStr.slice(0, -1);
-                }
-                
+                let jsonStr = input.includes('=') ? input.substring(input.indexOf('=') + 1) : input;
+                if (jsonStr.endsWith(';')) jsonStr = jsonStr.slice(0, -1);
                 const config = JSON.parse(jsonStr);
-                
-                // Validate fields
                 if (!config.apiKey) throw new Error("Missing 'apiKey'");
-                if (!config.projectId) throw new Error("Missing 'projectId'");
-                if (!config.authDomain) throw new Error("Missing 'authDomain'");
-
                 localStorage.setItem('wwts_firebase_config', JSON.stringify(config));
                 window.location.reload();
-            } catch(e) {
-                alert("Invalid Configuration: " + e.message + "\n\nPlease copy the entire object: { apiKey: '...', ... }");
-            }
+            } catch(e) { alert("Invalid Configuration: " + e.message); }
         };
 
         window.createRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
             
-            // Visual Feedback
             const btn = document.getElementById('createRoomBtn');
             const originalText = btn.innerText;
             btn.innerText = "Creating...";
@@ -125,10 +128,7 @@
             roomId = newRoomId;
             
             try {
-                // Create Room Doc
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                console.log("Attempting to write to:", roomRef.path);
-
                 await setDoc(roomRef, {
                     hostId: user.uid,
                     status: 'lobby', 
@@ -137,19 +137,17 @@
                     players: []
                 });
 
-                console.log("Room Created!");
+                // Save room ID for persistence during Spotify redirect
+                localStorage.setItem('wwts_active_room_id', roomId);
 
-                // Switch UI
                 document.getElementById('lobby-screen').classList.add('hidden');
                 document.getElementById('host-screen').classList.remove('hidden');
                 document.getElementById('roomCodeDisplay').innerText = roomId;
-                
-                // Listen to Room
                 subscribeToRoom(roomId, 'host');
 
             } catch(e) {
                 console.error("Create Room Error:", e);
-                alert("Error creating room:\n" + e.message + "\n\nCHECK: Did you enable Firestore in Test Mode (public)?");
+                alert("Error creating room: " + e.message);
                 btn.innerText = originalText;
                 btn.disabled = false;
             }
@@ -180,16 +178,8 @@
                     return;
                 }
 
-                const playerData = {
-                    id: user.uid,
-                    name: name,
-                    buzzedAt: null,
-                    score: 0
-                };
-                
-                await updateDoc(roomRef, {
-                    players: arrayUnion(playerData)
-                });
+                const playerData = { id: user.uid, name: name, buzzedAt: null, score: 0 };
+                await updateDoc(roomRef, { players: arrayUnion(playerData) });
 
                 roomId = code;
                 document.getElementById('lobby-screen').classList.add('hidden');
@@ -200,7 +190,7 @@
                 subscribeToRoom(code, 'player');
             } catch(e) {
                 console.error("Join Error:", e);
-                alert("Error joining room:\n" + e.message);
+                alert("Error joining room: " + e.message);
                 btn.innerText = originalText;
                 btn.disabled = false;
             }
@@ -214,15 +204,13 @@
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
                 if(!doc.exists()) return;
                 const data = doc.data();
-                
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
             });
         }
 
-        // --- HOST LOGIC ---
+        // --- HOST & PLAYER UI LOGIC ---
         function updateHostUI(data) {
-            // Update Player Grid
             const grid = document.getElementById('playerGrid');
             const players = data.players || [];
             
@@ -264,33 +252,6 @@
             }
         }
 
-        // --- HOST ACTIONS ---
-        window.hostSetStatus = async (status) => {
-            if(!roomId) return;
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
-            try {
-                await updateDoc(roomRef, { status: status });
-                
-                if(status === 'playing' || status === 'lobby') {
-                     const snap = await getDoc(roomRef);
-                     const players = snap.data().players || [];
-                     const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
-                     await updateDoc(roomRef, { players: resetPlayers });
-                }
-            } catch(e) {
-                console.error("Host Status Error", e);
-                alert("Error updating game state: " + e.message);
-            }
-        };
-
-        window.awardWin = async (winnerId) => {
-             alert("Winner selected! Resetting round...");
-             window.hostSetStatus('lobby');
-        };
-
-        // --- PLAYER LOGIC ---
         function updatePlayerUI(data) {
             const statusEl = document.getElementById('player-status');
             const buzzBtn = document.getElementById('player-buzz-btn');
@@ -326,11 +287,30 @@
             }
         }
 
+        window.hostSetStatus = async (status) => {
+            if(!roomId) return;
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            try {
+                await updateDoc(roomRef, { status: status });
+                if(status === 'playing' || status === 'lobby') {
+                     const snap = await getDoc(roomRef);
+                     const players = snap.data().players || [];
+                     const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
+                     await updateDoc(roomRef, { players: resetPlayers });
+                }
+            } catch(e) { console.error("Host Status Error", e); }
+        };
+
+        window.awardWin = async (winnerId) => {
+             alert("Winner selected! Resetting round...");
+             window.hostSetStatus('lobby');
+        };
+
         window.playerBuzz = async () => {
             if(!roomId || !user) return;
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
-            
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
@@ -338,10 +318,8 @@
                 await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
                     if (!docSnap.exists()) return;
-                    
                     const players = docSnap.data().players;
                     const myIndex = players.findIndex(p => p.id === user.uid);
-                    
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
                         players[myIndex].buzzedAt = Date.now();
                         t.update(roomRef, { players: players });
@@ -351,6 +329,188 @@
                 console.error("Buzz failed", e);
                 btn.innerText = "RETRY";
             }
+        };
+
+        // --- SPOTIFY PKCE AUTH & LOGIC ---
+        const CLIENT_ID_KEY = 'wwts_client_id';
+        let deviceId = null;
+        let token = null;
+        let player = null;
+
+        // PKCE Helpers
+        function generateRandomString(length) {
+            let text = '';
+            const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            for (let i = 0; i < length; i++) text += possible.charAt(Math.floor(Math.random() * possible.length));
+            return text;
+        }
+
+        async function generateCodeChallenge(codeVerifier) {
+            const data = new TextEncoder().encode(codeVerifier);
+            const digest = await window.crypto.subtle.digest('SHA-256', data);
+            return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        // Init Spotify Check
+        window.addEventListener('load', async () => {
+             // 1. Check for PKCE Code
+             const params = new URLSearchParams(window.location.search);
+             const code = params.get('code');
+             
+             if (code) {
+                 await exchangeToken(code);
+                 // Clean URL
+                 window.history.replaceState({}, document.title, window.location.pathname);
+             }
+
+             // 2. Load stored token
+             const storedToken = localStorage.getItem('wwts_host_token');
+             if(storedToken) {
+                 token = storedToken;
+                 document.getElementById('auth-panel').innerHTML = '<div class="text-xs text-green-400 font-bold p-2 border border-green-500 rounded text-center">Spotify Connected</div><button onclick="logoutSpotify()" class="text-[10px] text-gray-500 underline w-full mt-1">Log Out</button>';
+             }
+
+             // 3. Fill Client ID / Redirect
+             const storedId = localStorage.getItem(CLIENT_ID_KEY);
+             if(storedId) {
+                const input = document.getElementById('clientIdInput');
+                if(input) input.value = storedId;
+             }
+             
+             const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+             document.getElementById('redirectUriDisplay').innerText = redirect;
+        });
+
+        window.startLogin = async () => {
+            const clientId = document.getElementById('clientIdInput').value.trim();
+            if(!clientId) return alert("Enter Client ID");
+            localStorage.setItem(CLIENT_ID_KEY, clientId);
+            
+            const verifier = generateRandomString(128);
+            await generateCodeChallenge(verifier); // Generate
+            const challenge = await generateCodeChallenge(verifier);
+            localStorage.setItem("wwts_verifier", verifier);
+
+            const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            
+            const args = new URLSearchParams({
+                response_type: 'code',
+                client_id: clientId,
+                scope: scopes,
+                redirect_uri: redirectUri,
+                code_challenge_method: 'S256',
+                code_challenge: challenge
+            });
+
+            window.location.href = 'https://accounts.spotify.com/authorize?' + args;
+        };
+
+        async function exchangeToken(code) {
+            const verifier = localStorage.getItem("wwts_verifier");
+            const clientId = localStorage.getItem(CLIENT_ID_KEY);
+            const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+
+            const params = new URLSearchParams({
+                client_id: clientId,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: redirectUri,
+                code_verifier: verifier,
+            });
+
+            try {
+                const res = await fetch('https://accounts.spotify.com/api/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: params
+                });
+                const data = await res.json();
+                
+                if (data.access_token) {
+                    localStorage.setItem('wwts_host_token', data.access_token);
+                    token = data.access_token;
+                    location.reload(); // Reload to clear params and restore state
+                } else {
+                    alert("Token Error: " + data.error_description);
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        window.logoutSpotify = () => {
+            localStorage.removeItem('wwts_host_token');
+            location.reload();
+        };
+
+        // Initialize Player when token available
+        window.onSpotifyWebPlaybackSDKReady = () => {
+             if(token) initSpotifyPlayer();
+        };
+
+        function initSpotifyPlayer() {
+            player = new Spotify.Player({
+                name: "WWTS Host",
+                getOAuthToken: cb => { cb(token); },
+                volume: 0.8
+            });
+
+            player.addListener('ready', ({ device_id }) => {
+                deviceId = device_id;
+                console.log('Ready with Device ID', device_id);
+            });
+
+            player.addListener('player_state_changed', state => {
+                if (!state) return;
+                const track = state.track_window.current_track;
+                document.getElementById('trackInfo').innerText = track.name;
+                document.getElementById('artistInfo').innerText = track.artists[0].name;
+
+                if (!state.paused && document.getElementById('cutMusicBtn').innerText.includes("START")) {
+                     window.hostSetStatus('playing');
+                }
+            });
+
+            player.connect();
+        }
+
+        // Host Controls
+        document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
+        document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
+        
+        document.getElementById('cutMusicBtn').onclick = async () => {
+             const btn = document.getElementById('cutMusicBtn');
+             if (btn.innerText.includes("CUT")) {
+                 await player.pause();
+                 window.hostSetStatus('cut');
+             } else if (btn.innerText.includes("RESET")) {
+                 window.hostSetStatus('lobby');
+             } else {
+                 alert("Play music on Spotify first!");
+             }
+        };
+
+        document.getElementById('searchBtn').onclick = async () => {
+            const query = document.getElementById('searchQuery').value;
+            if(!token) return alert("Log in first");
+            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json();
+            document.getElementById('searchResults').innerHTML = data.playlists.items.map(p => `
+                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-2 p-2 rounded hover:bg-white/10 cursor-pointer">
+                    <img src="${p.images[0]?.url}" class="w-8 h-8 rounded">
+                    <div class="text-xs truncate text-gray-300">${p.name}</div>
+                </div>
+            `).join('');
+        };
+
+        window.playPlaylist = async (uri) => {
+             if(!deviceId) return alert("Player not ready");
+             await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ context_uri: uri })
+            });
         };
 
     </script>
@@ -498,7 +658,10 @@
                 <div id="auth-panel">
                     <input type="text" id="clientIdInput" placeholder="Client ID" class="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs mb-2">
                     <button onclick="startLogin()" class="w-full bg-spotify text-black font-bold py-2 rounded text-xs mb-2">Log in Spotify</button>
-                    <div class="text-[10px] text-gray-500 break-all" id="redirectUriDisplay"></div>
+                </div>
+                <div class="text-[10px] text-gray-500 break-all p-2 border border-white/10 rounded mt-2">
+                    <span class="text-gray-400 font-bold block mb-1">Required Redirect URI:</span>
+                    <span id="redirectUriDisplay" class="select-all">...</span>
                 </div>
 
                 <!-- Search -->
@@ -551,138 +714,5 @@
         <span id="toastContent">Message</span>
     </div>
 
-    <script>
-        // --- SPOTIFY LOGIC (Reused from previous, stripped down for Host only) ---
-        const CLIENT_ID_KEY = 'wwts_client_id';
-        let deviceId = null;
-        let token = null;
-        let player = null;
-
-        // Init
-        window.addEventListener('load', () => {
-             // Auth Callback Check
-             const hash = window.location.hash.substring(1);
-             const params = new URLSearchParams(hash);
-             const accessToken = params.get('access_token');
-             
-             if(accessToken) {
-                 localStorage.setItem('wwts_host_token', accessToken);
-                 window.location.hash = '';
-                 token = accessToken;
-                 // Assume if we have a token, we are the host returning
-                 document.getElementById('lobby-screen').classList.add('hidden');
-                 document.getElementById('host-screen').classList.remove('hidden');
-                 // Note: Room creation state is lost on refresh in this simple version unless we store roomId in localStorage too.
-                 // For now, Host might need to recreate room or we handle persistence later.
-                 alert("Logged in! Please 'Create Room' again or implement persistence.");
-                 document.getElementById('lobby-screen').classList.remove('hidden');
-                 document.getElementById('host-screen').classList.add('hidden');
-             }
-
-             // Fill Client ID
-             const storedId = localStorage.getItem(CLIENT_ID_KEY);
-             if(storedId) document.getElementById('clientIdInput').value = storedId;
-             
-             // Redirect URI
-             let redirect = window.location.href.split('#')[0].split('?')[0];
-             redirect = redirect.replace('index.html', '');
-             document.getElementById('redirectUriDisplay').innerText = redirect;
-        });
-
-        window.startLogin = () => {
-            const clientId = document.getElementById('clientIdInput').value.trim();
-            if(!clientId) return alert("Enter Client ID");
-            localStorage.setItem(CLIENT_ID_KEY, clientId);
-            
-            let redirectUri = window.location.href.split('#')[0].split('?')[0];
-            redirectUri = redirectUri.replace('index.html', '');
-            
-            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
-            const url = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&show_dialog=true`;
-            window.location.href = url;
-        };
-
-        // Initialize Player when token available
-        window.onSpotifyWebPlaybackSDKReady = () => {
-             const storedToken = localStorage.getItem('wwts_host_token');
-             if(storedToken) {
-                 token = storedToken;
-                 initSpotifyPlayer();
-             }
-        };
-
-        function initSpotifyPlayer() {
-            player = new Spotify.Player({
-                name: "WWTS Host",
-                getOAuthToken: cb => { cb(token); },
-                volume: 0.8
-            });
-
-            player.addListener('ready', ({ device_id }) => {
-                deviceId = device_id;
-                console.log('Ready with Device ID', device_id);
-            });
-
-            player.addListener('player_state_changed', state => {
-                if (!state) return;
-                const track = state.track_window.current_track;
-                document.getElementById('trackInfo').innerText = track.name;
-                document.getElementById('artistInfo').innerText = track.artists[0].name;
-
-                // Auto-sync status?
-                // If we are "lobby" but music starts playing, maybe switch to "playing"?
-                if (!state.paused && document.getElementById('cutMusicBtn').innerText.includes("START")) {
-                     window.hostSetStatus('playing');
-                }
-            });
-
-            player.connect();
-        }
-
-        // Host Controls
-        document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
-        document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
-        
-        document.getElementById('cutMusicBtn').onclick = async () => {
-             const btn = document.getElementById('cutMusicBtn');
-             // Logic depends on current text/state, which is synced from Firestore via updateHostUI
-             // We just trigger state changes here.
-             
-             if (btn.innerText.includes("CUT")) {
-                 await player.pause();
-                 window.hostSetStatus('cut');
-             } else if (btn.innerText.includes("RESET")) {
-                 window.hostSetStatus('lobby');
-             } else {
-                 alert("Play music on Spotify first!");
-             }
-        };
-
-        // Search (Reused)
-        document.getElementById('searchBtn').onclick = async () => {
-            const query = document.getElementById('searchQuery').value;
-            if(!token) return alert("Log in first");
-            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await res.json();
-            document.getElementById('searchResults').innerHTML = data.playlists.items.map(p => `
-                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-2 p-2 rounded hover:bg-white/10 cursor-pointer">
-                    <img src="${p.images[0]?.url}" class="w-8 h-8 rounded">
-                    <div class="text-xs truncate text-gray-300">${p.name}</div>
-                </div>
-            `).join('');
-        };
-
-        window.playPlaylist = async (uri) => {
-             if(!deviceId) return alert("Player not ready");
-             await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ context_uri: uri })
-            });
-        };
-
-    </script>
 </body>
 </html>
