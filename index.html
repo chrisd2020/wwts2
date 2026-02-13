@@ -335,7 +335,8 @@
         // --- SPOTIFY PKCE AUTH & LOGIC ---
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
-        let token = null;
+        // Fix: Get token immediately to prevent race conditions
+        let token = localStorage.getItem('wwts_host_token');
         let player = null;
 
         // PKCE Helpers
@@ -364,11 +365,9 @@
                  if(window.location.hash.includes('access_token')) window.location.hash = '';
              }
 
-             // 2. Load stored token
-             const storedToken = localStorage.getItem('wwts_host_token');
-             if(storedToken) {
-                 token = storedToken;
-                 document.getElementById('auth-panel').innerHTML = '<div class="text-xs text-green-400 font-bold p-2 border border-green-500 rounded text-center">Spotify Connected</div><button onclick="logoutSpotify()" class="text-[10px] text-gray-500 underline w-full mt-1">Log Out</button>';
+             // 2. Load stored token & UI
+             if(token) {
+                 updateAuthUI();
              }
 
              // 3. Fill Client ID / Redirect
@@ -381,6 +380,21 @@
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
              document.getElementById('redirectUriDisplay').innerText = redirect;
         });
+
+        function updateAuthUI() {
+            const panel = document.getElementById('auth-panel');
+            if(panel) {
+                 panel.innerHTML = `
+                    <div class="text-xs text-green-400 font-bold p-2 border border-green-500 rounded text-center mb-2">
+                        Spotify Connected
+                    </div>
+                    <div id="player-status-indicator" class="text-[10px] text-yellow-500 text-center mb-2 animate-pulse">
+                        Player Status: Connecting...
+                    </div>
+                    <button onclick="logoutSpotify()" class="text-[10px] text-gray-500 underline w-full">Log Out</button>
+                 `;
+            }
+        }
 
         window.startLogin = async () => {
             const clientId = document.getElementById('clientIdInput').value.trim();
@@ -457,11 +471,17 @@
             location.reload();
         };
 
+        // Fix: Use a flag to prevent double-init
+        let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => {
-             if(token) initSpotifyPlayer();
+             if(token && !playerInit) initSpotifyPlayer();
         };
 
         function initSpotifyPlayer() {
+            if(playerInit) return;
+            playerInit = true;
+            
+            console.log("Initializing Player...");
             player = new Spotify.Player({
                 name: "WWTS Host",
                 getOAuthToken: cb => { cb(token); },
@@ -471,6 +491,16 @@
             player.addListener('ready', ({ device_id }) => {
                 deviceId = device_id;
                 console.log('Ready with Device ID', device_id);
+                
+                const indicator = document.getElementById('player-status-indicator');
+                if(indicator) {
+                    indicator.innerText = "Player Status: Ready";
+                    indicator.className = "text-[10px] text-green-400 text-center mb-2 font-bold";
+                }
+            });
+
+            player.addListener('not_ready', ({ device_id }) => {
+                console.log('Device ID has gone offline', device_id);
             });
 
             player.addListener('player_state_changed', state => {
@@ -517,7 +547,7 @@
             }
 
             document.getElementById('searchResults').innerHTML = data.playlists.items
-                .filter(p => p !== null) // Filter out null items
+                .filter(p => p !== null) 
                 .map(p => {
                     const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
                     return `
@@ -529,12 +559,19 @@
         };
 
         window.playPlaylist = async (uri) => {
-             if(!deviceId) return alert("Player not ready");
-             await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ context_uri: uri })
-            });
+             if(!deviceId) return alert("Player not ready. Wait for status 'Ready'.");
+             
+             // Fix: Explicitly use device_id in API call
+             try {
+                 await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                    method: 'PUT',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ context_uri: uri })
+                });
+             } catch(e) {
+                 console.error(e);
+                 alert("Failed to play. Ensure Spotify is active.");
+             }
         };
 
     </script>
