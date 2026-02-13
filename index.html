@@ -259,7 +259,9 @@
             token: null,
             timerInterval: null,
             fadeInterval: null,
-            isDragging: false
+            isDragging: false,
+            spotifyReady: false,
+            playerInitialized: false
         };
 
         const CLIENT_ID_KEY = 'wwts_client_id';
@@ -285,6 +287,16 @@
             roundStatus: document.getElementById('round-status')
         };
 
+        // --- GLOBAL SPOTIFY CALLBACK (Must be defined immediately) ---
+        window.onSpotifyWebPlaybackSDKReady = () => {
+            console.log("Spotify SDK is ready.");
+            gameState.spotifyReady = true;
+            // Attempt init if we already have a token
+            if (gameState.token && !gameState.playerInitialized) {
+                initSpotifyPlayer();
+            }
+        };
+
         // --- AUTH & INIT ---
         function checkAuth() {
             const params = new URLSearchParams(window.location.hash.substring(1));
@@ -303,7 +315,11 @@
                 gameState.token = token;
                 el.loginView.classList.add('hidden');
                 el.gameView.classList.remove('hidden');
-                initSpotify();
+                
+                // Attempt init if SDK loaded first
+                if (gameState.spotifyReady && !gameState.playerInitialized) {
+                    initSpotifyPlayer();
+                }
                 
                 // Init UI
                 updateCutMarker();
@@ -362,47 +378,49 @@
 
         let player;
 
-        function initSpotify() {
-            window.onSpotifyWebPlaybackSDKReady = () => {
-                player = new Spotify.Player({
-                    name: "WWTS Host",
-                    getOAuthToken: cb => { cb(gameState.token); },
-                    volume: 0.8
-                });
+        function initSpotifyPlayer() {
+            if (gameState.playerInitialized) return;
+            gameState.playerInitialized = true;
+            console.log("Initializing Spotify Player...");
+
+            player = new Spotify.Player({
+                name: "WWTS Host",
+                getOAuthToken: cb => { cb(gameState.token); },
+                volume: 0.8
+            });
+            
+            // --- AUTH ERROR DETECTION ---
+            player.addListener('authentication_error', ({ message }) => {
+                console.error('Auth Error:', message);
+                handleAuthError();
+            });
+
+            player.addListener('ready', ({ device_id }) => {
+                console.log('Ready with Device ID', device_id);
+                gameState.deviceId = device_id;
+                el.status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
+                el.status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
+                transferPlayback(device_id);
+            });
+
+            player.addListener('player_state_changed', state => {
+                if (!state) return;
                 
-                // --- AUTH ERROR DETECTION ---
-                player.addListener('authentication_error', ({ message }) => {
-                    console.error('Auth Error:', message);
-                    handleAuthError();
-                });
+                const track = state.track_window.current_track;
+                el.trackName.innerText = track.name;
+                el.artistName.innerText = track.artists[0].name;
+                el.albumArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
 
-                player.addListener('ready', ({ device_id }) => {
-                    console.log('Ready with Device ID', device_id);
-                    gameState.deviceId = device_id;
-                    el.status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
-                    el.status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
-                    transferPlayback(device_id);
-                });
+                // SYNC LOGIC: If we are 'starting' and Spotify finally plays, switch to 'playing'
+                if (gameState.status === 'starting' && !state.paused) {
+                    gameState.status = 'playing';
+                    gameState.startTime = performance.now() - state.position;
+                    updateRoundStatus("Playing");
+                    loop();
+                }
+            });
 
-                player.addListener('player_state_changed', state => {
-                    if (!state) return;
-                    
-                    const track = state.track_window.current_track;
-                    el.trackName.innerText = track.name;
-                    el.artistName.innerText = track.artists[0].name;
-                    el.albumArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
-
-                    // SYNC LOGIC: If we are 'starting' and Spotify finally plays, switch to 'playing'
-                    if (gameState.status === 'starting' && !state.paused) {
-                        gameState.status = 'playing';
-                        gameState.startTime = performance.now() - state.position;
-                        updateRoundStatus("Playing");
-                        loop();
-                    }
-                });
-
-                player.connect();
-            };
+            player.connect();
         }
 
         async function transferPlayback(deviceId) {
