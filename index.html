@@ -639,15 +639,27 @@
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
-            document.getElementById('results').innerHTML = data.playlists.items.map(p => `
-                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
-                    <img src="${p.images[0]?.url}" class="w-10 h-10 rounded shadow">
-                    <div class="min-w-0">
-                        <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
-                        <div class="text-[10px] text-gray-400">${p.tracks.total} tracks</div>
+            
+            // Fix: Check if playlists exist and filter out null items
+            if (!data.playlists || !data.playlists.items) {
+                 document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>';
+                 return;
+            }
+
+            document.getElementById('results').innerHTML = data.playlists.items
+                .filter(p => p !== null) // Filter out null items from Spotify API
+                .map(p => {
+                    // Safety check for images
+                    const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
+                    return `
+                    <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
+                        <img src="${imgUrl}" class="w-10 h-10 rounded shadow object-cover">
+                        <div class="min-w-0">
+                            <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
+                            <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `}).join('');
         };
 
         window.playPlaylist = async (uri) => {
