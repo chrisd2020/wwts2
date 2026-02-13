@@ -54,7 +54,8 @@
         
         /* Interactive Timeline */
         #timeline-container { cursor: default; }
-        #timeline-container.interactive { cursor: ew-resize; }
+        #timeline-container.interactive { cursor: ew-resize; pointer-events: auto; }
+        #timeline-container.locked { pointer-events: none; } /* Disable seeking */
         #timeline-container.interactive:hover { height: 2.5rem; background-color: rgba(0,0,0,0.5); }
     </style>
 
@@ -250,9 +251,10 @@
         let autoCutTimer = null;
         let isDragging = false;
         let currentPlayers = []; 
+        let currentLoopStartTime = 0; // Track sync
 
         function updateHostUI(data) {
-            // FIX 1: Don't update UI while dragging to prevent jumps
+            // FIX: Don't update UI components while dragging to prevent jumps
             if (isDragging) return;
 
             // Update Players Grid (Right side)
@@ -304,7 +306,7 @@
             const cutMarker = document.getElementById('cut-marker');
             const timelineContainer = document.getElementById('timeline-container');
             
-            // FIX 2: Only update slider/marker if NOT dragging it
+            // Update slider/marker if NOT dragging it
             if(data.autoCutTime && document.activeElement !== document.getElementById('cutTimeSlider')) {
                 const cutPos = (data.autoCutTime / 60) * 100;
                 cutMarker.style.left = `${cutPos}%`;
@@ -317,9 +319,17 @@
                 startBtn.innerText = "Stop Round";
                 startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                 startBtn.onclick = () => window.hostSetStatus('cut');
-                timelineContainer.classList.remove('interactive');
                 
-                if(!autoCutTimer) startTimerLoop(data.startTime || Date.now(), data.autoCutTime, false);
+                // FIX: Add 'locked' class to disable events on timeline while playing
+                timelineContainer.classList.remove('interactive');
+                timelineContainer.classList.add('locked');
+                isDragging = false; // Safety reset
+                
+                // Check if we need to restart timer due to drift or first load
+                const serverStartTime = data.startTime || Date.now();
+                if(!autoCutTimer || Math.abs(serverStartTime - currentLoopStartTime) > 100) {
+                     startTimerLoop(serverStartTime, data.autoCutTime, false);
+                }
 
             } else if (data.status === 'cut') {
                 roundStatus.innerText = "Music Cut";
@@ -332,6 +342,7 @@
                 revealBtn.onclick = () => window.hostSetStatus('revealing');
                 
                 timelineContainer.classList.add('interactive');
+                timelineContainer.classList.remove('locked');
                 stopTimerLoop();
 
             } else if (data.status === 'revealing') {
@@ -345,9 +356,12 @@
                 revealBtn.onclick = () => window.hostSetStatus('cut'); 
                 
                 timelineContainer.classList.add('interactive'); 
+                timelineContainer.classList.remove('locked');
                 
-                // FIX 3: Start loop for reveal mode with no cut limit
-                if(!autoCutTimer) startTimerLoop(data.startTime || Date.now(), 60, true); 
+                const serverStartTime = data.startTime || Date.now();
+                if(!autoCutTimer || Math.abs(serverStartTime - currentLoopStartTime) > 100) {
+                     startTimerLoop(serverStartTime, 60, true);
+                }
 
             } else {
                 roundStatus.innerText = "Idle";
@@ -358,6 +372,7 @@
                 revealBtn.innerText = "🔊 Reveal Music";
                 
                 timelineContainer.classList.remove('interactive');
+                timelineContainer.classList.add('locked');
                 stopTimerLoop();
                 document.getElementById('gameTimer').innerText = "0.00";
                 document.getElementById('timeline-progress').style.width = "0%";
@@ -366,25 +381,30 @@
 
         function startTimerLoop(startTime, autoCutLimit, isRevealMode) {
             if(autoCutTimer) cancelAnimationFrame(autoCutTimer);
+            currentLoopStartTime = startTime;
             
             function loop() {
-                if (isDragging) {
-                    autoCutTimer = requestAnimationFrame(loop);
-                    return; 
-                }
+                try {
+                    if (isDragging) {
+                        autoCutTimer = requestAnimationFrame(loop);
+                        return; 
+                    }
 
-                const elapsed = (Date.now() - startTime) / 1000;
-                
-                document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
-                document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
-                
-                highlightClosest(elapsed);
+                    const elapsed = Math.max(0, (Date.now() - startTime) / 1000);
+                    
+                    document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
+                    document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
+                    
+                    highlightClosest(elapsed);
 
-                // FIX 4: Ensure auto-cut logic respects isRevealMode
-                if(!isRevealMode && elapsed >= autoCutLimit && document.getElementById('autoCutToggle').checked) {
-                    window.hostSetStatus('cut');
-                } else {
-                    autoCutTimer = requestAnimationFrame(loop);
+                    // Ensure auto-cut logic respects isRevealMode
+                    if(!isRevealMode && elapsed >= autoCutLimit && document.getElementById('autoCutToggle').checked) {
+                        window.hostSetStatus('cut');
+                    } else {
+                        autoCutTimer = requestAnimationFrame(loop);
+                    }
+                } catch(e) {
+                    console.error("Timer Loop Error:", e);
                 }
             }
             autoCutTimer = requestAnimationFrame(loop);
@@ -457,7 +477,6 @@
                     
                     const newStartTime = Date.now() - (seconds * 1000);
                     
-                    // FIX 5: Explicitly pass isRevealMode=true if we are in reveal state
                     if (document.getElementById('revealBtn').innerText.includes("Pause")) {
                          startTimerLoop(newStartTime, 60, true);
                     } else {
