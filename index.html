@@ -301,9 +301,21 @@
             // Robust hash parsing
             const hash = window.location.hash.substring(1);
             const params = new URLSearchParams(hash);
+            
+            // Check for errors in hash (Implicit Grant errors appear here)
+            if (params.get('error')) {
+                const errorMsg = params.get('error');
+                console.error("WWTS Debug: Auth Error in Hash:", errorMsg);
+                alert("Spotify Login Error: " + errorMsg + "\n\nPlease check your Client ID and Redirect URI.");
+                // Clear hash to prevent loops and let user try again
+                window.history.replaceState(null, null, ' ');
+                initLoginView();
+                return;
+            }
+
             let accessToken = params.get('access_token');
             
-            // Fallback for messy URLs (sometimes happens with redirects)
+            // Fallback for messy URLs
             if (!accessToken && hash.includes('access_token=')) {
                 try {
                     const match = hash.match(/access_token=([^&]*)/);
@@ -336,7 +348,7 @@
                 renderPlayers();
             } else {
                 console.log("WWTS Debug: No token found, showing login.");
-                // Check for errors in query params
+                // Check for errors in query params (Auth Code errors appear here)
                 const searchParams = new URLSearchParams(window.location.search);
                 if (searchParams.get('error')) {
                     alert("Spotify Login Error: " + searchParams.get('error'));
@@ -355,7 +367,10 @@
         }
 
         window.startLogin = () => {
-            const clientId = document.getElementById('clientIdInput').value.trim();
+            const clientIdInput = document.getElementById('clientIdInput').value.trim();
+            // Remove any non-alphanumeric chars just in case of weird copy-paste invisible chars
+            const clientId = clientIdInput.replace(/[^a-zA-Z0-9]/g, '');
+
             if(!clientId) return alert("Please enter a Client ID from the Spotify Developer Dashboard.");
             
             localStorage.setItem(CLIENT_ID_KEY, clientId);
@@ -364,18 +379,36 @@
             // Example: https://chrisd2020.github.io/wwts2/
             let redirectUri = window.location.origin + window.location.pathname;
             
-            // Remove trailing 'index.html' if present, but keep trailing slash if it's a folder
+            // Remove trailing 'index.html' if present
             redirectUri = redirectUri.replace('index.html', '');
-            if(redirectUri.endsWith('/') && redirectUri.length > 1) {
-                 // Keep it as is, standard practice
+            
+            // Ensure no double slashes at end if pathname was just /
+            if (redirectUri.endsWith('/') && redirectUri.length > 1) {
+                // Keep it standard, but ensure consistency with Dashboard
+                // Some browsers might strip it, but usually standardizing on keeping/removing it is key.
+                // We will leave it as is (window.location usually includes it for folders).
             }
 
             console.log("WWTS Debug: Redirecting to:", redirectUri);
 
-            const scopes = 'streaming user-read-email user-read-private user-modify-playback-state';
-            const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}`;
-            
-            window.location.href = authUrl;
+            const scopes = [
+                'streaming',
+                'user-read-email',
+                'user-read-private',
+                'user-read-playback-state',
+                'user-modify-playback-state'
+            ].join(' ');
+
+            // Use URLSearchParams for bulletproof encoding
+            const params = new URLSearchParams({
+                client_id: clientId,
+                response_type: 'token',
+                redirect_uri: redirectUri,
+                scope: scopes,
+                show_dialog: 'true' // Force re-approval to clear bad states
+            });
+
+            window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
         };
 
         window.enterManualToken = () => {
