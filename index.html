@@ -23,7 +23,7 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Timeline Animations from Original UI */
+        /* Timeline Animations from Working Version */
         .timeline-marker {
             position: absolute; top: -5px; bottom: -5px; width: 2px; background: white; z-index: 10;
             transition: left 0.2s, background-color 0.1s, height 0.1s, top 0.1s; pointer-events: none;
@@ -52,10 +52,9 @@
         .custom-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
         .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
         
-        /* Interactive Timeline */
+        /* Interactive Timeline from Working Version */
         #timeline-container { cursor: default; }
         #timeline-container.interactive { cursor: ew-resize; pointer-events: auto; }
-        #timeline-container.locked { pointer-events: none; } /* Disable seeking */
         #timeline-container.interactive:hover { height: 2.5rem; background-color: rgba(0,0,0,0.5); }
     </style>
 
@@ -70,6 +69,18 @@
         let roomId = null;
         let unsubscribeRoom = null;
         let isFirebaseReady = false;
+
+        // --- GAME STATE (Local Copy for Logic) ---
+        let localState = {
+            players: [],
+            status: 'idle',
+            startTime: 0,
+            pauseTime: 0,
+            autoCutTime: 10,
+            isDragging: false,
+            fadeInterval: null,
+            timerInterval: null
+        };
 
         function getFirebaseConfig() {
             try {
@@ -103,9 +114,7 @@
                 onAuthStateChanged(auth, async (u) => {
                     user = u;
                     if(user) {
-                        console.log("Firebase Auth: ", user.uid);
                         isFirebaseReady = true;
-                        
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         
                         if (savedRoomId) {
@@ -144,8 +153,6 @@
 
         initFirebase();
 
-        // --- GLOBAL EXPORTS ---
-        
         window.saveFirebaseConfig = () => {
             const input = document.getElementById('firebaseConfigInput').value.trim();
             if(!input) return alert("Please paste the config JSON.");
@@ -161,7 +168,6 @@
 
         window.createRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
-            
             const btn = document.getElementById('createRoomBtn');
             btn.innerText = "Creating...";
             btn.disabled = true;
@@ -177,7 +183,9 @@
                     status: 'lobby', 
                     createdAt: serverTimestamp(),
                     players: [],
-                    autoCutTime: 10 // Default
+                    autoCutTime: 10,
+                    startTime: 0,
+                    pauseTime: 0
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -186,10 +194,7 @@
                 document.getElementById('roomCodeDisplay').innerText = roomId;
                 subscribeToRoom(roomId, 'host');
 
-            } catch(e) {
-                console.error("Create Room Error:", e);
-                alert("Error creating room: " + e.message);
-            }
+            } catch(e) { console.error("Create Room Error:", e); }
         };
 
         window.joinRoom = async () => {
@@ -226,12 +231,7 @@
                 document.getElementById('player-name-display').innerText = name;
 
                 subscribeToRoom(code, 'player');
-            } catch(e) {
-                console.error("Join Error:", e);
-                alert("Error joining room: " + e.message);
-                btn.innerText = "Join Game";
-                btn.disabled = false;
-            }
+            } catch(e) { console.error("Join Error:", e); }
         };
 
         function subscribeToRoom(id, role) {
@@ -242,39 +242,123 @@
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
                 if(!doc.exists()) return;
                 const data = doc.data();
+                
+                // Update Local State for Loop
+                localState.players = data.players || [];
+                localState.status = data.status;
+                localState.startTime = data.startTime || 0;
+                localState.pauseTime = data.pauseTime || 0;
+                localState.autoCutTime = data.autoCutTime || 10;
+
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
             });
         }
 
-        // --- HOST & PLAYER UI LOGIC ---
-        let autoCutTimer = null;
-        let isDragging = false;
-        let currentPlayers = []; 
-        let currentLoopStartTime = 0; // Track sync
-
+        // --- HOST LOGIC (The Brain) ---
+        
         function updateHostUI(data) {
-            // FIX: Don't update UI components while dragging to prevent jumps
-            if (isDragging) return;
-
-            // Update Players Grid (Right side)
-            const grid = document.getElementById('playerGrid');
-            const players = data.players || [];
-            currentPlayers = players; 
+            // Update Players Grid & Markers
+            renderHostPlayers(data);
             
-            // Markers for Timeline
+            // Slider/AutoCut
+            if(document.activeElement !== document.getElementById('cutTimeSlider')) {
+                document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
+                document.getElementById('cutTimeSlider').value = data.autoCutTime;
+                const cutPos = (data.autoCutTime / 60) * 100;
+                document.getElementById('cut-marker').style.left = `${cutPos}%`;
+            }
+
+            // Controls & Buttons
+            const roundStatus = document.getElementById('round-status');
+            const startBtn = document.getElementById('startRoundBtn');
+            const revealBtn = document.getElementById('revealBtn');
+            const timelineContainer = document.getElementById('timeline-container');
+
+            if (data.status === 'playing') {
+                roundStatus.innerText = "Playing";
+                startBtn.innerText = "Stop Round";
+                startBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                startBtn.onclick = () => window.hostCutMusic();
+                
+                revealBtn.disabled = true;
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] opacity-50 cursor-not-allowed";
+
+                timelineContainer.classList.remove('interactive');
+                
+                // Start Loop if not running
+                if(!localState.timerInterval) startLoop();
+
+            } else if (data.status === 'cut') {
+                roundStatus.innerText = "Music Cut";
+                startBtn.innerText = "Next Round / Reset";
+                startBtn.classList.replace('bg-red-600', 'bg-gray-700');
+                startBtn.onclick = () => window.hostResetRound();
+                
+                revealBtn.disabled = false;
+                revealBtn.innerText = "🔊 Reveal Music";
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition active:translate-y-1";
+                revealBtn.onclick = () => window.hostToggleReveal();
+                
+                timelineContainer.classList.add('interactive');
+                if(!localState.timerInterval) startLoop(); // Loop needed for paused state UI (rendering paused time)
+
+            } else if (data.status === 'revealing') {
+                roundStatus.innerText = "Revealing";
+                startBtn.innerText = "Reset Round";
+                startBtn.classList.replace('bg-red-600', 'bg-gray-700'); 
+                startBtn.onclick = () => window.hostResetRound();
+                
+                revealBtn.innerText = "⏸ Pause Reveal";
+                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
+                revealBtn.onclick = () => window.hostToggleReveal();
+                
+                timelineContainer.classList.add('interactive'); 
+                if(!localState.timerInterval) startLoop();
+
+            } else if (data.status === 'paused_reveal') {
+                roundStatus.innerText = "Paused";
+                revealBtn.innerText = "▶ Resume Reveal";
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
+                revealBtn.onclick = () => window.hostToggleReveal();
+                
+                timelineContainer.classList.add('interactive');
+                if(!localState.timerInterval) startLoop();
+
+            } else {
+                // Lobby/Idle
+                roundStatus.innerText = "Idle";
+                startBtn.innerText = "▶ Start Round";
+                startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
+                startBtn.onclick = () => window.hostStartRound();
+                
+                revealBtn.disabled = true;
+                revealBtn.innerText = "🔊 Reveal Music";
+                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
+                
+                timelineContainer.classList.remove('interactive');
+                if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
+                
+                document.getElementById('gameTimer').innerText = "0.00";
+                document.getElementById('timeline-progress').style.width = "0%";
+            }
+        }
+
+        function renderHostPlayers(data) {
+            const grid = document.getElementById('playerGrid');
             const markersContainer = document.getElementById('timeline-markers');
             markersContainer.innerHTML = ''; 
 
+            const players = data.players || [];
             players.sort((a, b) => {
                 if (a.buzzedAt && b.buzzedAt) return a.buzzedAt - b.buzzedAt;
                 if (a.buzzedAt) return -1; if (b.buzzedAt) return 1; return 0;
             });
 
-            // Populate Players
             grid.innerHTML = players.map((p, i) => {
                 const isBuzzed = p.buzzedAt !== null;
                 
+                // Add Timeline Marker
                 if (isBuzzed && data.status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
@@ -295,158 +379,149 @@
                         ${isBuzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
                         ${isBuzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
                     </div>
-                    ${isBuzzed ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Select Winner</button>` : ''}
+                    ${(isBuzzed && (data.status === 'cut' || data.status === 'revealing' || data.status === 'paused_reveal')) ? 
+                        `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Select Winner</button>` 
+                        : ''}
                 </div>
             `}).join('');
-
-            // Update Controls
-            const roundStatus = document.getElementById('round-status');
-            const startBtn = document.getElementById('startRoundBtn');
-            const revealBtn = document.getElementById('revealBtn');
-            const cutMarker = document.getElementById('cut-marker');
-            const timelineContainer = document.getElementById('timeline-container');
-            
-            // Update slider/marker if NOT dragging it
-            if(data.autoCutTime && document.activeElement !== document.getElementById('cutTimeSlider')) {
-                const cutPos = (data.autoCutTime / 60) * 100;
-                cutMarker.style.left = `${cutPos}%`;
-                document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
-                document.getElementById('cutTimeSlider').value = data.autoCutTime;
-            }
-
-            if (data.status === 'playing') {
-                roundStatus.innerText = "Playing";
-                startBtn.innerText = "Stop Round";
-                startBtn.classList.replace('bg-blue-600', 'bg-red-600');
-                startBtn.onclick = () => window.hostSetStatus('cut');
-                
-                // FIX: Add 'locked' class to disable events on timeline while playing
-                timelineContainer.classList.remove('interactive');
-                timelineContainer.classList.add('locked');
-                isDragging = false; // Safety reset
-                
-                // Check if we need to restart timer due to drift or first load
-                const serverStartTime = data.startTime || Date.now();
-                if(!autoCutTimer || Math.abs(serverStartTime - currentLoopStartTime) > 100) {
-                     startTimerLoop(serverStartTime, data.autoCutTime, false);
-                }
-
-            } else if (data.status === 'cut') {
-                roundStatus.innerText = "Music Cut";
-                startBtn.innerText = "Next Round / Reset";
-                startBtn.classList.replace('bg-red-600', 'bg-gray-700');
-                startBtn.onclick = () => window.hostSetStatus('lobby');
-                revealBtn.disabled = false;
-                revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition active:translate-y-1";
-                revealBtn.onclick = () => window.hostSetStatus('revealing');
-                
-                timelineContainer.classList.add('interactive');
-                timelineContainer.classList.remove('locked');
-                stopTimerLoop();
-
-            } else if (data.status === 'revealing') {
-                roundStatus.innerText = "Revealing";
-                startBtn.innerText = "Reset Round";
-                startBtn.classList.replace('bg-red-600', 'bg-gray-700'); 
-                startBtn.onclick = () => window.hostSetStatus('lobby');
-                
-                revealBtn.innerText = "⏸ Pause Reveal";
-                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
-                revealBtn.onclick = () => window.hostSetStatus('cut'); 
-                
-                timelineContainer.classList.add('interactive'); 
-                timelineContainer.classList.remove('locked');
-                
-                const serverStartTime = data.startTime || Date.now();
-                if(!autoCutTimer || Math.abs(serverStartTime - currentLoopStartTime) > 100) {
-                     startTimerLoop(serverStartTime, 60, true);
-                }
-
-            } else {
-                roundStatus.innerText = "Idle";
-                startBtn.innerText = "▶ Start Round";
-                startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
-                startBtn.onclick = () => window.startRound();
-                revealBtn.disabled = true;
-                revealBtn.innerText = "🔊 Reveal Music";
-                
-                timelineContainer.classList.remove('interactive');
-                timelineContainer.classList.add('locked');
-                stopTimerLoop();
-                document.getElementById('gameTimer').innerText = "0.00";
-                document.getElementById('timeline-progress').style.width = "0%";
-            }
         }
 
-        function startTimerLoop(startTime, autoCutLimit, isRevealMode) {
-            if(autoCutTimer) cancelAnimationFrame(autoCutTimer);
-            currentLoopStartTime = startTime;
+        // --- THE GAME LOOP (From Working Version) ---
+        function startLoop() {
+            if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             
             function loop() {
-                try {
-                    if (isDragging) {
-                        autoCutTimer = requestAnimationFrame(loop);
-                        return; 
-                    }
+                if (localState.isDragging) {
+                    localState.timerInterval = requestAnimationFrame(loop);
+                    return; 
+                }
 
-                    const elapsed = Math.max(0, (Date.now() - startTime) / 1000);
-                    
-                    document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
-                    document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
-                    
-                    highlightClosest(elapsed);
+                let elapsed = 0;
+                
+                if (localState.status === 'paused_reveal' || localState.status === 'cut') {
+                    elapsed = localState.pauseTime;
+                } else if (localState.status === 'playing' || localState.status === 'revealing') {
+                    // Calculate from start time
+                    elapsed = (Date.now() - localState.startTime) / 1000;
+                    elapsed = Math.max(0, elapsed);
+                }
 
-                    // Ensure auto-cut logic respects isRevealMode
-                    if(!isRevealMode && elapsed >= autoCutLimit && document.getElementById('autoCutToggle').checked) {
-                        window.hostSetStatus('cut');
-                    } else {
-                        autoCutTimer = requestAnimationFrame(loop);
-                    }
-                } catch(e) {
-                    console.error("Timer Loop Error:", e);
+                // Update UI
+                document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
+                document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
+                
+                // Highlight Logic
+                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'cut') {
+                     highlightClosest(elapsed);
+                }
+
+                // Auto Cut Logic
+                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && elapsed >= localState.autoCutTime) {
+                    window.hostCutMusic();
+                }
+
+                localState.timerInterval = requestAnimationFrame(loop);
+            }
+            localState.timerInterval = requestAnimationFrame(loop);
+        }
+
+        // --- HOST ACTIONS (Equivalent to "Working Version" logic but updating Firebase) ---
+
+        window.hostStartRound = async () => {
+            // Reset players locally first to avoid flicker? No, trust Firebase.
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
+            
+            // Clean players
+            const snap = await getDoc(roomRef);
+            const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
+
+            await updateDoc(roomRef, {
+                status: 'playing',
+                startTime: Date.now(), // Use Date.now() for Sync
+                pauseTime: 0,
+                autoCutTime: cutTime,
+                players: cleanPlayers
+            });
+
+            if(player) {
+                await player.setVolume(0.8);
+                await player.seek(0);
+                await player.resume();
+            }
+        };
+
+        window.hostCutMusic = async () => {
+            if(localState.status !== 'playing') return;
+
+            // Fade out locally
+            let vol = 0.8;
+            const fade = setInterval(() => {
+                vol = Math.max(0, vol - 0.05);
+                if(player) player.setVolume(vol);
+                if(vol <= 0) {
+                    clearInterval(fade);
+                    if(player) player.pause();
+                }
+            }, 50);
+
+            // Calculate Pause Time based on actual elapsed
+            const elapsed = (Date.now() - localState.startTime) / 1000;
+            
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            
+            await updateDoc(roomRef, {
+                status: 'cut',
+                pauseTime: elapsed
+            });
+        };
+
+        window.hostToggleReveal = async () => {
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            
+            if (localState.status === 'revealing') {
+                // PAUSE IT
+                const elapsed = (Date.now() - localState.startTime) / 1000;
+                await updateDoc(roomRef, {
+                    status: 'paused_reveal',
+                    pauseTime: elapsed
+                });
+                if(player) player.pause();
+            
+            } else {
+                // RESUME / START REVEAL
+                // New Start Time = Now - Previously Elapsed
+                let currentElapsed = localState.pauseTime;
+                
+                await updateDoc(roomRef, {
+                    status: 'revealing',
+                    startTime: Date.now() - (currentElapsed * 1000)
+                });
+                
+                if(player) {
+                    await player.setVolume(0.8);
+                    await player.seek(currentElapsed * 1000);
+                    await player.resume();
                 }
             }
-            autoCutTimer = requestAnimationFrame(loop);
-        }
+        };
 
-        function stopTimerLoop() {
-            if(autoCutTimer) cancelAnimationFrame(autoCutTimer);
-            autoCutTimer = null;
-        }
+        window.hostResetRound = async () => {
+             const appId = window.__app_id || 'wwts-game'; 
+             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             await updateDoc(roomRef, { status: 'lobby' });
+             if(player) player.pause();
+        };
 
-        // --- SCRUBBING & HIGHLIGHTING ---
+        window.awardWin = async (pid) => {
+             alert("Winner selected!");
+             window.hostResetRound();
+        };
 
-        function highlightClosest(elapsed) {
-            if (!currentPlayers || currentPlayers.length === 0) return;
-            
-            let closestId = null;
-            let minDiff = Infinity;
-
-            currentPlayers.forEach(p => {
-                if (p.buzzedAt !== null) {
-                    const diff = Math.abs(elapsed - p.buzzedAt);
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        closestId = p.id;
-                    }
-                }
-            });
-
-            currentPlayers.forEach(p => {
-                const card = document.getElementById(`player-card-${p.id}`);
-                const marker = document.getElementById(`marker-${p.id}`);
-                
-                if (p.id === closestId && minDiff < 5) { 
-                    if(card) card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                    if(marker) marker.classList.add('marker-closest');
-                } else {
-                    if(card) card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                    if(marker) marker.classList.remove('marker-closest');
-                }
-            });
-        }
-
+        // --- SCRUBBING LOGIC (Synced) ---
         const timeline = document.getElementById('timeline-container');
         
         function getScrubTime(e) {
@@ -459,31 +534,30 @@
 
         timeline.addEventListener('mousedown', (e) => {
             if (!timeline.classList.contains('interactive')) return;
-            isDragging = true;
+            localState.isDragging = true;
             handleScrub(e);
         });
 
         window.addEventListener('mousemove', (e) => {
-            if (isDragging) handleScrub(e);
+            if (localState.isDragging) handleScrub(e);
         });
 
         window.addEventListener('mouseup', async (e) => {
-            if (isDragging) {
-                isDragging = false;
+            if (localState.isDragging) {
+                localState.isDragging = false;
                 const seconds = getScrubTime(e);
                 
-                if(player) {
-                    await player.seek(seconds * 1000);
-                    
-                    const newStartTime = Date.now() - (seconds * 1000);
-                    
-                    if (document.getElementById('revealBtn').innerText.includes("Pause")) {
-                         startTimerLoop(newStartTime, 60, true);
-                    } else {
-                         document.getElementById('gameTimer').innerText = seconds.toFixed(2);
-                         highlightClosest(seconds);
-                    }
+                // Update Firebase based on state
+                const appId = window.__app_id || 'wwts-game'; 
+                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+
+                if (localState.status === 'paused_reveal' || localState.status === 'cut') {
+                     await updateDoc(roomRef, { pauseTime: seconds });
+                } else if (localState.status === 'revealing') {
+                     await updateDoc(roomRef, { startTime: Date.now() - (seconds * 1000) });
                 }
+                
+                if(player) await player.seek(seconds * 1000);
             }
         });
 
@@ -494,7 +568,43 @@
             highlightClosest(seconds);
         }
 
+        function highlightClosest(elapsed) {
+            const players = localState.players;
+            let closestId = null;
+            let minDiff = Infinity;
 
+            players.forEach(p => {
+                if (p.buzzedAt !== null) {
+                    const diff = Math.abs(elapsed - p.buzzedAt);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closestId = p.id;
+                    }
+                }
+            });
+
+            players.forEach(p => {
+                const card = document.getElementById(`player-card-${p.id}`);
+                const marker = document.getElementById(`marker-${p.id}`);
+                
+                if (p.id === closestId) { 
+                    if(card) {
+                        card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
+                        card.classList.remove('winner-card'); // Remove generic bg to let highlight shine
+                    }
+                    if(marker) marker.classList.add('marker-closest');
+                } else {
+                    if(card) {
+                        card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
+                        if(p.buzzedAt !== null) card.classList.add('winner-card');
+                    }
+                    if(marker) marker.classList.remove('marker-closest');
+                }
+            });
+        }
+
+
+        // --- PLAYER UI ---
         function updatePlayerUI(data) {
             const statusEl = document.getElementById('player-status');
             const buzzBtn = document.getElementById('player-buzz-btn');
@@ -531,86 +641,32 @@
             }
         }
 
-        // --- GAME ACTIONS ---
-
-        window.hostSetStatus = async (status) => {
-            if(!roomId) return;
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
-            const updateData = { status: status };
-            
-            if (status === 'playing') {
-                 if(player) { 
-                    player.resume().catch(e => console.log("Resume failed", e));
-                    player.setVolume(0.8);
-                 }
-                 const snap = await getDoc(roomRef);
-                 const players = snap.data().players || [];
-                 const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
-                 updateData.players = resetPlayers;
-                 updateData.startTime = Date.now(); // Sync start time
-
-            } else if (status === 'cut') {
-                 if(player) {
-                    let vol = 0.8;
-                    const fade = setInterval(() => {
-                        vol -= 0.1;
-                        if(vol <= 0) { clearInterval(fade); player.pause(); }
-                        else player.setVolume(vol);
-                    }, 50);
-                 }
-
-            } else if (status === 'revealing') {
-                 if(player) {
-                     await player.seek(0);
-                     await player.setVolume(0.8);
-                     await player.resume();
-                 }
-                 updateData.startTime = Date.now(); // Reset timer visually for reveal
-            
-            } else if (status === 'lobby') {
-                 stopTimerLoop();
-                 document.getElementById('gameTimer').innerText = "0.00";
-                 document.getElementById('timeline-progress').style.width = "0%";
-                 if(player) player.pause();
-            }
-            await updateDoc(roomRef, updateData);
-        };
-
-        window.startRound = async () => {
-            // Get Slider Value
-            const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await updateDoc(roomRef, { autoCutTime: cutTime });
-            window.hostSetStatus('playing');
-        };
-
-        window.awardWin = async (winnerId) => {
-             alert("Winner selected! Resetting round...");
-             window.hostSetStatus('lobby');
-        };
-
         window.playerBuzz = async () => {
             if(!roomId || !user) return;
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            const buzzTime = parseFloat(document.getElementById('gameTimer') ? document.getElementById('gameTimer').innerText : (Math.random() * 10).toFixed(2));
-
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            // Calculate elapsed based on Host's PauseTime (Since it's cut)
+            const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
             try {
                 await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
                     if (!docSnap.exists()) return;
-                    const players = docSnap.data().players;
+                    const data = docSnap.data();
+                    
+                    if (data.status !== 'cut') return; // Only buzz if cut
+
+                    const players = data.players;
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
-                        players[myIndex].buzzedAt = docSnap.data().autoCutTime + (Math.random() * 2); 
+                        // Use the Host's stored pauseTime + random reaction simulation
+                        // Or just use the pauseTime because in "Singing", the time doesn't matter as much as *who* buzzed, 
+                        // but the game logic uses time to order them. 
+                        // We will use the 'pauseTime' stored in DB so markers align with the cut line.
+                        // Add a tiny random fraction to avoid collision.
+                        players[myIndex].buzzedAt = data.pauseTime + (Math.random() * 0.1); 
                         t.update(roomRef, { players: players });
                     }
                 });
@@ -788,11 +844,19 @@
 
         // Settings Toggles
         document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
+             // For visual feedback only before saving to DB
              const val = e.target.value;
              document.getElementById('cutTimeDisplay').innerText = val + 's';
-             // Update visual marker immediately on slider change
              const pos = (val / 60) * 100;
              document.getElementById('cut-marker').style.left = `${pos}%`;
+        });
+        
+        // Commit slider value to DB on change (mouseup)
+        document.getElementById('cutTimeSlider').addEventListener('change', async (e) => {
+            const val = parseInt(e.target.value);
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            await updateDoc(roomRef, { autoCutTime: val });
         });
 
     </script>
