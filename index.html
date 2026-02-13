@@ -240,7 +240,7 @@
             const cutBtn = document.getElementById('cutMusicBtn');
             if (data.status === 'playing') {
                 cutBtn.innerText = "CUT MUSIC!";
-                cutBtn.className = "flex-1 bg-red-600 hover:bg-red-500 text-white font-black text-xl py-4 rounded-xl shadow-xl transition-all active:scale-95";
+                cutBtn.className = "flex-1 bg-red-600 hover:bg-red-500 text-white font-black text-xl py-4 rounded-xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-2 border-b-4 border-red-800 active:border-b-0 active:translate-y-1";
                 cutBtn.disabled = false;
             } else if (data.status === 'cut') {
                 cutBtn.innerText = "RESET ROUND";
@@ -509,6 +509,16 @@
                 document.getElementById('trackInfo').innerText = track.name;
                 document.getElementById('artistInfo').innerText = track.artists[0].name;
 
+                // Sync Play/Pause Icon
+                const playIcon = document.getElementById('playIcon');
+                if (playIcon) {
+                    if (state.paused) {
+                         playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>'; // Play
+                    } else {
+                         playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'; // Pause
+                    }
+                }
+
                 if (!state.paused && document.getElementById('cutMusicBtn').innerText.includes("START")) {
                      window.hostSetStatus('playing');
                 }
@@ -519,6 +529,7 @@
 
         document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
         document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
+        document.getElementById('prevTrackBtn').onclick = () => player && player.previousTrack(); // Restored
         
         document.getElementById('cutMusicBtn').onclick = async () => {
              const btn = document.getElementById('cutMusicBtn');
@@ -737,26 +748,32 @@
         <!-- Right Main: Game Board -->
         <div class="flex flex-col gap-4 h-full overflow-hidden">
             
-            <!-- Now Playing -->
-            <div class="glass p-6 border-t-4 border-yellow-500">
-                <div class="flex justify-between items-center mb-4">
-                    <div>
-                        <div class="text-xs text-yellow-500 font-bold uppercase">Now Playing</div>
-                        <div id="trackInfo" class="text-2xl font-black leading-tight">Waiting for Music...</div>
-                        <div id="artistInfo" class="text-lg text-gray-400">---</div>
+            <!-- Now Playing (Restored UI) -->
+            <section class="glass p-6 border-t-4 border-yellow-500 relative overflow-hidden">
+                <div class="relative z-10">
+                    <div class="flex justify-between items-start mb-6">
+                        <div class="flex-1 mr-4 overflow-hidden">
+                            <h2 class="text-yellow-500 font-bold uppercase tracking-widest text-sm mb-2">Now Playing</h2>
+                            <div id="trackInfo" class="text-2xl font-black leading-tight mb-1 truncate">Waiting for Music...</div>
+                            <div id="artistInfo" class="text-lg text-gray-400 truncate">---</div>
+                        </div>
                     </div>
-                    <!-- Playback Controls -->
-                    <div class="flex items-center gap-2">
-                        <button id="playPauseBtn" class="p-3 bg-white text-black rounded-full hover:scale-105 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
-                        <button id="nextTrackBtn" class="p-3 bg-white/10 text-white rounded-full hover:bg-white/20"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+
+                    <div class="flex flex-wrap items-center gap-4">
+                        <!-- Playback Controls -->
+                        <div class="flex items-center bg-black/30 rounded-xl p-1">
+                            <button id="prevTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+                            <button id="playPauseBtn" class="p-4 bg-white text-black rounded-lg hover:scale-105 transition shadow-lg"><svg id="playIcon" class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                            <button id="nextTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+                        </div>
+
+                        <!-- THE BIG BUTTON -->
+                        <button id="cutMusicBtn" class="flex-1 bg-gray-700 text-gray-500 font-bold text-xl py-4 rounded-xl transition-all flex items-center justify-center gap-2 border-b-4 border-gray-800" disabled>
+                            <span>START ROUND (Play Music First)</span>
+                        </button>
                     </div>
                 </div>
-
-                <!-- BIG BUTTON -->
-                <button id="cutMusicBtn" class="w-full bg-gray-700 text-gray-500 font-bold text-xl py-4 rounded-xl transition-all" disabled>
-                    START ROUND (Play Music First)
-                </button>
-            </div>
+            </section>
 
             <!-- Players Grid -->
             <div class="flex-1 glass p-4 overflow-y-auto custom-scroll">
