@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Win When They're Singing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
+        
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at center, #1e1233 0%, #0a0514 100%);
+            color: white;
+            min-height: 100vh;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Timeline Animations */
+        .timeline-marker {
+            position: absolute;
+            top: -5px;
+            bottom: -5px;
+            width: 2px;
+            background: white;
+            z-index: 10;
+            transition: left 0.2s, background-color 0.1s, height 0.1s, top 0.1s;
+            pointer-events: none; /* Let clicks pass through to container */
+        }
+        .timeline-avatar {
+            position: absolute;
+            top: -28px;
+            transform: translateX(-50%);
+            font-size: 11px;
+            white-space: nowrap;
+            background: white;
+            color: black;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            transition: background-color 0.1s;
+        }
+        .timeline-avatar::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 4px solid white;
+        }
+
+        /* Highlight Styles for Closest Match */
+        .marker-closest {
+            background-color: #facc15 !important; /* Yellow-400 */
+            height: 24px !important;
+            top: -12px !important;
+            z-index: 50 !important;
+        }
+        .marker-closest .timeline-avatar {
+            background-color: #facc15 !important;
+        }
+        .marker-closest .timeline-avatar::after {
+            border-top-color: #facc15 !important;
+        }
+
+        /* Interactive Timeline */
+        #timeline-container {
+            cursor: default;
+        }
+        #timeline-container.interactive {
+            cursor: ew-resize;
+        }
+        #timeline-container.interactive:hover {
+            height: 2.5rem; /* Grow slightly on hover */
+            background-color: rgba(0,0,0,0.5);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+        
+        .winner-card {
+            border-color: #eab308;
+            background: rgba(234, 179, 8, 0.1);
+            box-shadow: 0 0 20px rgba(234, 179, 8, 0.2);
+        }
+    </style>
+</head>
+<body class="p-4 h-screen overflow-hidden flex flex-col">
+
+    <!-- LOGIN OVERLAY -->
+    <div id="login-view" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
+        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2">
+            Win When They're Singing
+        </h1>
+        <p class="text-gray-400 mb-8">Web Edition</p>
+        <div class="glass p-8 rounded-2xl w-full max-w-md text-center">
+            <a href="/login" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
+                Log in with Spotify
+            </a>
+            <p class="text-xs text-gray-500 mt-4">Required for playback control</p>
+        </div>
+    </div>
+
+    <!-- MAIN APP LAYOUT -->
+    <div id="game-view" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[350px_1fr] gap-6 max-w-7xl mx-auto w-full h-full">
+        
+        <!-- LEFT COLUMN: CONTROLS -->
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            <!-- Header -->
+            <div class="glass p-4 rounded-xl">
+                <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
+                <div id="status-indicator" class="mt-2 flex items-center gap-2 text-xs font-mono text-red-400">
+                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Disconnected
+                </div>
+            </div>
+
+            <!-- Settings -->
+            <div class="glass p-4 rounded-xl space-y-4">
+                <div class="flex justify-between items-center">
+                    <label class="text-xs font-bold uppercase text-gray-400">Auto-Cut Music</label>
+                    <input type="checkbox" id="autoCutToggle" checked class="accent-green-500">
+                </div>
+                <div class="space-y-1">
+                    <div class="flex justify-between text-xs text-gray-300">
+                        <span>Cut after:</span>
+                        <span id="cutTimeDisplay" class="font-mono text-green-400">10s</span>
+                    </div>
+                    <input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div class="pt-2 border-t border-white/10">
+                    <button onclick="logout()" class="text-xs text-red-400 hover:text-white underline w-full text-left">Log Out / Clear Token</button>
+                </div>
+            </div>
+
+            <!-- Search -->
+            <div class="glass p-4 rounded-xl flex-1 flex flex-col min-h-0">
+                <div class="flex gap-2 mb-2">
+                    <input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500">
+                    <button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button>
+                </div>
+                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll">
+                    <div class="text-gray-500 text-xs text-center mt-4">Results appear here...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN: GAME BOARD -->
+        <div class="flex flex-col gap-4 h-full overflow-hidden relative">
+            
+            <!-- NOW PLAYING & TIMELINE -->
+            <div class="glass p-6 rounded-xl border-t-4 border-yellow-500 relative overflow-hidden">
+                <div class="flex gap-6 items-center relative z-10">
+                    <div id="album-art" class="w-24 h-24 bg-black/40 rounded-lg flex items-center justify-center text-4xl shadow-lg shrink-0 overflow-hidden">🎵</div>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="text-xs text-yellow-500 font-bold uppercase tracking-widest">Current Track</span>
+                            <span id="round-status" class="text-[10px] bg-white/10 px-2 py-0.5 rounded text-gray-300">Idle</span>
+                        </div>
+                        <h2 id="track-name" class="text-3xl font-black leading-tight truncate">Waiting...</h2>
+                        <p id="artist-name" class="text-xl text-gray-400 truncate">---</p>
+                    </div>
+                    <div class="text-right">
+                        <div id="gameTimer" class="text-5xl font-mono font-bold text-white tabular-nums">0.00</div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">Seconds Elapsed</div>
+                    </div>
+                </div>
+
+                <!-- Timeline Bar -->
+                <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
+                    <!-- Progress Fill (REMOVED TRANSITION TO FIX JUMP) -->
+                    <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-xl opacity-80 pointer-events-none"></div>
+                    
+                    <!-- Markers Container -->
+                    <div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div>
+
+                    <!-- Auto Cut Marker -->
+                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 z-0 transition-all duration-300 pointer-events-none" style="left: 0%;">
+                        <div class="absolute -top-4 -translate-x-1/2 text-[10px] text-red-400 font-bold">CUT</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CONTROLS -->
+            <div class="grid grid-cols-3 gap-4">
+                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
+                    ▶ Start Round
+                </button>
+
+                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
+                    ⏭ Next Song
+                </button>
+                
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>
+                    🔊 Reveal Music
+                </button>
+            </div>
+
+            <!-- PLAYERS GRID -->
+            <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-sm font-bold uppercase text-gray-400">Players</h3>
+                    <div class="space-x-2">
+                         <button onclick="addPlayer()" class="text-xs bg-white/10 hover:bg-white/20 px-3 py-1 rounded">+ Add</button>
+                         <button onclick="resetGame()" class="text-xs text-red-400 hover:text-red-300 px-3 py-1">Reset All</button>
+                    </div>
+                </div>
+                
+                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    <!-- Player Cards -->
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // --- STATE ---
+        let players = [
+            { id: 1, name: 'Player 1', buzzed: null, wins: 0 },
+            { id: 2, name: 'Player 2', buzzed: null, wins: 0 }
+        ];
+        
+        let gameState = {
+            status: 'idle', // idle, starting, playing, cut, complete, revealing, paused_reveal
+            startTime: 0,
+            pauseTime: 0,
+            autoCutTime: 10,
+            autoCutEnabled: true,
+            hasCut: false,
+            deviceId: null,
+            token: null,
+            timerInterval: null,
+            fadeInterval: null,
+            isDragging: false
+        };
+
+        const el = {
+            gameView: document.getElementById('game-view'),
+            loginView: document.getElementById('login-view'),
+            status: document.getElementById('status-indicator'),
+            trackName: document.getElementById('track-name'),
+            artistName: document.getElementById('artist-name'),
+            albumArt: document.getElementById('album-art'),
+            timer: document.getElementById('gameTimer'),
+            timeline: document.getElementById('timeline-progress'),
+            timelineContainer: document.getElementById('timeline-container'),
+            markers: document.getElementById('timeline-markers'),
+            cutMarker: document.getElementById('cut-marker'),
+            playerGrid: document.getElementById('playerGrid'),
+            revealBtn: document.getElementById('revealBtn'),
+            startRoundBtn: document.getElementById('startRoundBtn'),
+            cutTimeSlider: document.getElementById('cutTimeSlider'),
+            cutTimeDisplay: document.getElementById('cutTimeDisplay'),
+            autoCutToggle: document.getElementById('autoCutToggle'),
+            roundStatus: document.getElementById('round-status')
+        };
+
+        // --- AUTH & INIT ---
+        function checkAuth() {
+            const params = new URLSearchParams(window.location.hash.substring(1));
+            const urlToken = params.get('access_token');
+            const storedToken = localStorage.getItem('wwts_local_token');
+            
+            const token = urlToken || storedToken;
+
+            if (token) {
+                if (urlToken) {
+                    localStorage.setItem('wwts_local_token', urlToken);
+                    // Updated to use pathname to support GitHub Pages subdirectories (e.g., /my-repo/)
+                    window.history.pushState({}, document.title, window.location.pathname);
+                }
+                
+                gameState.token = token;
+                el.loginView.classList.add('hidden');
+                el.gameView.classList.remove('hidden');
+                initSpotify();
+                
+                // Init UI
+                updateCutMarker();
+                renderPlayers();
+            }
+        }
+        
+        window.logout = () => {
+            localStorage.removeItem('wwts_local_token');
+            window.location.reload();
+        };
+        
+        function handleAuthError() {
+            console.log("Session expired or invalid token.");
+            localStorage.removeItem('wwts_local_token');
+            
+            // Return to login screen
+            el.gameView.classList.add('hidden');
+            el.loginView.classList.remove('hidden');
+            
+            alert("Spotify session expired. Please log in again.");
+        }
+
+        let player;
+
+        function initSpotify() {
+            window.onSpotifyWebPlaybackSDKReady = () => {
+                player = new Spotify.Player({
+                    name: "WWTS Host",
+                    getOAuthToken: cb => { cb(gameState.token); },
+                    volume: 0.8
+                });
+                
+                // --- AUTH ERROR DETECTION ---
+                player.addListener('authentication_error', ({ message }) => {
+                    console.error('Auth Error:', message);
+                    handleAuthError();
+                });
+
+                player.addListener('ready', ({ device_id }) => {
+                    console.log('Ready with Device ID', device_id);
+                    gameState.deviceId = device_id;
+                    el.status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
+                    el.status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
+                    transferPlayback(device_id);
+                });
+
+                player.addListener('player_state_changed', state => {
+                    if (!state) return;
+                    
+                    const track = state.track_window.current_track;
+                    el.trackName.innerText = track.name;
+                    el.artistName.innerText = track.artists[0].name;
+                    el.albumArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+
+                    // SYNC LOGIC: If we are 'starting' and Spotify finally plays, switch to 'playing'
+                    if (gameState.status === 'starting' && !state.paused) {
+                        gameState.status = 'playing';
+                        gameState.startTime = performance.now() - state.position;
+                        updateRoundStatus("Playing");
+                        loop();
+                    }
+                });
+
+                player.connect();
+            };
+        }
+
+        async function transferPlayback(deviceId) {
+            const res = await fetch('https://api.spotify.com/v1/me/player', {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${gameState.token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device_ids: [deviceId], play: false })
+            });
+            if (res.status === 401) handleAuthError();
+        }
+
+        // --- GAME LOGIC ---
+
+        async function restartRound() {
+            if (!gameState.deviceId) return;
+            resetRoundState();
+            gameState.status = 'starting';
+            updateRoundStatus("Syncing...");
+            
+            // UPDATE BUTTON TEXT
+            el.startRoundBtn.innerText = "↺ Restart Round";
+            
+            await player.setVolume(0.8);
+            await player.seek(0);
+            await player.resume();
+        }
+
+        async function nextRound() {
+            if (!gameState.deviceId) return;
+            resetRoundState();
+            gameState.status = 'starting';
+            updateRoundStatus("Loading...");
+            
+            // UPDATE BUTTON TEXT
+            el.startRoundBtn.innerText = "↺ Restart Round";
+
+            await player.setVolume(0.8);
+            await player.nextTrack();
+        }
+
+        function resetRoundState() {
+            gameState.hasCut = false;
+            // Stop fading if active
+            if (gameState.fadeInterval) {
+                clearInterval(gameState.fadeInterval);
+                gameState.fadeInterval = null;
+            }
+            players.forEach(p => p.buzzed = null);
+            
+            el.revealBtn.disabled = true;
+            el.revealBtn.innerText = "🔊 Reveal Music";
+            el.revealBtn.classList.remove('animate-pulse', 'bg-yellow-600', 'hover:bg-yellow-500');
+            el.revealBtn.classList.add('bg-green-600', 'hover:bg-green-500');
+            el.timelineContainer.classList.remove('interactive');
+            
+            el.markers.innerHTML = '';
+            el.timer.innerText = "0.00";
+            el.timeline.style.width = "0%";
+            
+            if (gameState.timerInterval) cancelAnimationFrame(gameState.timerInterval);
+            renderPlayers();
+        }
+
+        function loop() {
+            // Stop loop conditions
+            if (gameState.status !== 'playing' && gameState.status !== 'revealing' && gameState.status !== 'paused_reveal') return;
+
+            let elapsed;
+            
+            if (gameState.isDragging) {
+                 // Don't update time from clock while dragging, wait for mousemove to set it
+                 requestAnimationFrame(loop);
+                 return;
+            }
+
+            if (gameState.status === 'paused_reveal') {
+                // Time is frozen at pauseTime
+                elapsed = gameState.pauseTime;
+            } else {
+                const now = performance.now();
+                elapsed = (now - gameState.startTime) / 1000;
+            }
+
+            updateUIForTime(elapsed);
+
+            // Auto-Cut Logic
+            if (gameState.status === 'playing' && gameState.autoCutEnabled && !gameState.hasCut && elapsed >= gameState.autoCutTime) {
+                cutMusic();
+            }
+
+            // Highlighting Logic (Run continuously so dragging updates it)
+            if (gameState.status === 'revealing' || gameState.status === 'paused_reveal') {
+                highlightClosest(elapsed);
+            }
+
+            gameState.timerInterval = requestAnimationFrame(loop);
+        }
+
+        function updateUIForTime(elapsed) {
+            el.timer.innerText = elapsed.toFixed(2);
+            const percentage = Math.min((elapsed / 60) * 100, 100);
+            el.timeline.style.width = `${percentage}%`;
+        }
+
+        function highlightClosest(elapsed) {
+            let closestId = null;
+            let minDiff = Infinity;
+
+            players.forEach(p => {
+                if (p.buzzed !== null) {
+                    const diff = Math.abs(elapsed - p.buzzed);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closestId = p.id;
+                    }
+                }
+            });
+
+            players.forEach(p => {
+                const card = document.getElementById(`player-card-${p.id}`);
+                const marker = document.getElementById(`marker-${p.id}`);
+                
+                if (p.id === closestId) {
+                    if(card) {
+                        card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
+                        card.classList.remove('border-green-500');
+                    }
+                    if(marker) marker.classList.add('marker-closest');
+                } else {
+                    if(card) {
+                        card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
+                        if(p.buzzed) card.classList.add('border-green-500'); 
+                    }
+                    if(marker) marker.classList.remove('marker-closest');
+                }
+            });
+        }
+
+        function cutMusic() {
+            gameState.hasCut = true;
+            
+            // FADE OUT LOGIC
+            let vol = 0.8;
+            if (gameState.fadeInterval) clearInterval(gameState.fadeInterval);
+            
+            gameState.fadeInterval = setInterval(() => {
+                vol = Math.max(0, vol - 0.05); // Decrease volume
+                if(player) player.setVolume(vol);
+                
+                if (vol <= 0) {
+                    clearInterval(gameState.fadeInterval);
+                    gameState.fadeInterval = null;
+                }
+            }, 50); // ~800ms fade
+
+            const cutPos = (gameState.autoCutTime / 60) * 100;
+            const marker = document.createElement('div');
+            marker.className = 'absolute top-0 bottom-0 w-0.5 bg-red-500 z-20';
+            marker.style.left = `${cutPos}%`;
+            el.markers.appendChild(marker);
+            
+            updateRoundStatus("Music Cut");
+            renderPlayers();
+        }
+
+        function buzz(playerId) {
+            if (gameState.status !== 'playing') return;
+            if (!gameState.hasCut) return; 
+            
+            const playerObj = players.find(p => p.id === playerId);
+            if (playerObj.buzzed !== null) return; 
+
+            const elapsed = (performance.now() - gameState.startTime) / 1000;
+            playerObj.buzzed = elapsed;
+
+            const pos = (elapsed / 60) * 100;
+            const marker = document.createElement('div');
+            marker.id = `marker-${playerId}`; 
+            marker.className = 'timeline-marker bg-white';
+            marker.style.left = `${pos}%`;
+            marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${playerObj.name}</div>`;
+            el.markers.appendChild(marker);
+
+            renderPlayers();
+
+            if (players.every(p => p.buzzed !== null)) {
+                endGuessingPhase();
+            }
+        }
+
+        async function endGuessingPhase() {
+            gameState.status = 'complete';
+            cancelAnimationFrame(gameState.timerInterval);
+            updateRoundStatus("Guesses In");
+            
+            await player.pause();
+            await player.seek(0);
+            await player.setVolume(0.8);
+
+            el.revealBtn.disabled = false;
+            el.timelineContainer.classList.add('interactive'); // Enable Dragging
+            renderPlayers();
+        }
+
+        async function toggleReveal() {
+            if (gameState.status === 'revealing') {
+                // PAUSE
+                // 1. FREEZE STATE IMMEDIATELY
+                gameState.status = 'paused_reveal';
+                const now = performance.now();
+                gameState.pauseTime = (now - gameState.startTime) / 1000;
+
+                // 2. FORCE UI UPDATE to prevent visual mismatch
+                updateUIForTime(gameState.pauseTime);
+
+                // 3. UPDATE BUTTONS
+                el.revealBtn.innerText = "▶ Resume Reveal";
+                el.revealBtn.classList.replace('bg-yellow-600', 'bg-green-600');
+                updateRoundStatus("Paused");
+
+                // 4. CALL SPOTIFY
+                await player.pause();
+                
+            } else {
+                // RESUME (or START)
+                if (gameState.status === 'paused_reveal') {
+                    // Resuming: Adjust StartTime so elapsed matches where we paused
+                    // newStart = now - (pauseTime * 1000)
+                    gameState.startTime = performance.now() - (gameState.pauseTime * 1000);
+                } else {
+                    // Starting fresh
+                    gameState.startTime = performance.now(); 
+                }
+                
+                await player.resume();
+                gameState.status = 'revealing';
+                el.revealBtn.innerText = "⏸ Pause Reveal";
+                el.revealBtn.classList.replace('bg-green-600', 'bg-yellow-600');
+                el.revealBtn.classList.replace('hover:bg-green-500', 'hover:bg-yellow-500');
+                updateRoundStatus("Revealing");
+                loop(); 
+            }
+        }
+
+        async function selectWinner(playerId) {
+            // PAUSE ON WINNER SELECTION
+            if(gameState.status === 'revealing') {
+                await toggleReveal(); // Reuse this logic to pause cleanly and update UI
+            } else if (gameState.status !== 'paused_reveal') {
+                // Manual pause fallback
+                gameState.status = 'paused_reveal';
+                if(gameState.status === 'complete') {
+                    gameState.pauseTime = 0;
+                } else {
+                    const now = performance.now();
+                    gameState.pauseTime = (now - gameState.startTime) / 1000;
+                }
+                await player.pause(); 
+            }
+
+            const p = players.find(p => p.id === playerId);
+            if(p) p.wins++;
+            alert(`${p.name} wins the round!`);
+            renderPlayers();
+        }
+
+        // --- SCRUBBING LOGIC ---
+        function getScrubTime(e) {
+            const rect = el.timelineContainer.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            x = Math.max(0, Math.min(x, rect.width));
+            const pct = x / rect.width;
+            return pct * 60; // 0-60s scale
+        }
+
+        el.timelineContainer.addEventListener('mousedown', (e) => {
+            if (gameState.status !== 'revealing' && gameState.status !== 'paused_reveal' && gameState.status !== 'complete') return;
+            
+            gameState.isDragging = true;
+            handleScrubMove(e);
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (gameState.isDragging) handleScrubMove(e);
+        });
+
+        window.addEventListener('mouseup', async (e) => {
+            if (gameState.isDragging) {
+                gameState.isDragging = false;
+                const seconds = getScrubTime(e);
+                
+                // Sync Game Clock
+                if (gameState.status === 'paused_reveal') {
+                    gameState.pauseTime = seconds;
+                } else {
+                    gameState.startTime = performance.now() - (seconds * 1000);
+                }
+                
+                // Sync Spotify
+                await player.seek(seconds * 1000);
+            }
+        });
+
+        function handleScrubMove(e) {
+            const seconds = getScrubTime(e);
+            updateUIForTime(seconds);
+            highlightClosest(seconds); // Update highlighting while dragging
+        }
+
+        // --- UI HANDLERS ---
+
+        function updateCutMarker() {
+            const pct = (gameState.autoCutTime / 60) * 100;
+            el.cutMarker.style.left = `${pct}%`;
+        }
+        
+        function updateRoundStatus(text) {
+            el.roundStatus.innerText = text;
+        }
+
+        el.cutTimeSlider.addEventListener('input', (e) => {
+            gameState.autoCutTime = parseInt(e.target.value);
+            el.cutTimeDisplay.innerText = `${gameState.autoCutTime}s`;
+            updateCutMarker();
+        });
+
+        el.autoCutToggle.addEventListener('change', (e) => {
+            gameState.autoCutEnabled = e.target.checked;
+            el.cutMarker.style.display = e.target.checked ? 'block' : 'none';
+        });
+
+        document.getElementById('startRoundBtn').onclick = restartRound;
+        document.getElementById('nextRoundBtn').onclick = nextRound;
+        el.revealBtn.onclick = toggleReveal;
+
+        // Player Management
+        window.addPlayer = () => {
+            const name = prompt("Player Name:");
+            if (name) {
+                players.push({ id: Date.now(), name, buzzed: null, wins: 0 });
+                renderPlayers();
+            }
+        };
+
+        window.resetGame = () => {
+            players.forEach(p => { p.buzzed = null; p.wins = 0; });
+            gameState.status = 'idle';
+            cancelAnimationFrame(gameState.timerInterval);
+            
+            // UPDATE BUTTON TEXT
+            el.startRoundBtn.innerText = "▶ Start Round";
+            
+            renderPlayers();
+        };
+
+        function renderPlayers() {
+            el.playerGrid.innerHTML = players.map(p => {
+                const isBuzzed = p.buzzed !== null;
+                const canPickWinner = gameState.status === 'revealing' || gameState.status === 'paused_reveal' || gameState.status === 'complete';
+                const isButtonDisabled = gameState.status !== 'playing' || !gameState.hasCut || isBuzzed;
+                
+                return `
+                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'border border-green-500 bg-green-900/20' : ''} ${canPickWinner ? 'winner-card-hover' : ''}">
+                    <div class="flex justify-between w-full text-xs text-gray-400 px-1">
+                        <span>${p.name}</span>
+                        <span class="text-yellow-500">🏆 ${p.wins}</span>
+                    </div>
+                    
+                    <button onclick="buzz(${p.id})" ${isButtonDisabled ? 'disabled' : ''} 
+                        class="w-full py-6 rounded-lg font-black text-xl transition transform active:scale-95 shadow-lg
+                        ${isBuzzed ? 'bg-gray-700 text-gray-400 cursor-default' : 
+                          isButtonDisabled && gameState.status === 'playing' ? 'bg-gray-700 text-gray-500 cursor-not-allowed opacity-50' : 
+                          'bg-red-600 hover:bg-red-500 text-white shadow-red-900/50'}">
+                        ${isBuzzed ? p.buzzed.toFixed(2) + 's' : (gameState.hasCut ? 'SING!' : 'WAIT')}
+                    </button>
+
+                    ${canPickWinner ? `
+                        <button onclick="selectWinner(${p.id})" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">
+                            Select Winner
+                        </button>
+                    ` : ''}
+                </div>
+            `}).join('');
+        }
+
+        // Search Logic
+        document.getElementById('search-btn').onclick = async () => {
+            const query = document.getElementById('search-input').value;
+            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
+                headers: { 'Authorization': `Bearer ${gameState.token}` }
+            });
+            
+            if (res.status === 401) {
+                handleAuthError();
+                return;
+            }
+
+            const data = await res.json();
+            
+            document.getElementById('results').innerHTML = data.playlists.items
+                .filter(p => p)
+                .map(p => `
+                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
+                    <img src="${p.images[0]?.url}" class="w-10 h-10 rounded shadow">
+                    <div class="min-w-0">
+                        <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
+                        <div class="text-[10px] text-gray-400">${p.tracks.total} tracks</div>
+                    </div>
+                </div>
+            `).join('');
+        };
+
+        window.playPlaylist = async (uri) => {
+            if(!gameState.deviceId) return alert("Wait for connection...");
+            const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${gameState.deviceId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${gameState.token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ context_uri: uri })
+            });
+            if (res.status === 401) handleAuthError();
+        };
+
+        // Boot
+        checkAuth();
+
+    </script>
+</body>
+</html>
