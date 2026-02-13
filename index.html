@@ -3,9 +3,251 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Win When They're Singing</title>
+    <title>Win When They're Singing (Online)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://sdk.scdn.co/spotify-player.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- FIREBASE SETUP ---
+        const firebaseConfig = JSON.parse(window.__firebase_config || '{}'); // injected by environment
+        const appId = window.__app_id || 'default-app';
+        
+        let app, auth, db, user;
+        let roomId = null;
+        let unsubscribeRoom = null;
+
+        // Initialize
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            
+            signInAnonymously(auth).catch(console.error);
+            onAuthStateChanged(auth, (u) => {
+                user = u;
+                if(user) console.log("Firebase Auth: ", user.uid);
+            });
+        } catch(e) { console.error("Firebase Init Error", e); }
+
+        // --- GLOBAL EXPORTS FOR HTML ---
+        window.createRoom = async () => {
+            if(!user) return alert("Connecting to server...");
+            const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            roomId = newRoomId;
+            
+            // Create Room Doc
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            await setDoc(roomRef, {
+                hostId: user.uid,
+                status: 'lobby', // lobby, playing, cut, revealed
+                track: null,
+                createdAt: serverTimestamp(),
+                players: []
+            });
+
+            // Switch UI
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('host-screen').classList.remove('hidden');
+            document.getElementById('roomCodeDisplay').innerText = roomId;
+            
+            // Listen to Room
+            subscribeToRoom(roomId, 'host');
+        };
+
+        window.joinRoom = async () => {
+            if(!user) return alert("Connecting to server...");
+            const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
+            const name = document.getElementById('playerNameInput').value.trim();
+            
+            if(code.length !== 4) return alert("Invalid Room Code");
+            if(!name) return alert("Enter a name");
+
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${code}`);
+            const snap = await getDoc(roomRef);
+
+            if(!snap.exists()) return alert("Room not found!");
+
+            // Add Player to List
+            const playerData = {
+                id: user.uid,
+                name: name,
+                buzzedAt: null,
+                score: 0
+            };
+
+            // We store players in a subcollection or array. For simplicity/speed in Firestore limits:
+            // We'll update the main doc's player array for roster, but use a subcollection for buzzes if needed.
+            // Actually, let's just update the player list in the main doc for this simple game logic.
+            // Ideally we'd use a subcollection, but arrayUnion is easier for "joining".
+            
+            await updateDoc(roomRef, {
+                players: arrayUnion(playerData)
+            });
+
+            roomId = code;
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('player-screen').classList.remove('hidden');
+            document.getElementById('player-room-code').innerText = code;
+            document.getElementById('player-name-display').innerText = name;
+
+            subscribeToRoom(code, 'player');
+        };
+
+        function subscribeToRoom(id, role) {
+            if(unsubscribeRoom) unsubscribeRoom();
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${id}`);
+
+            unsubscribeRoom = onSnapshot(roomRef, (doc) => {
+                if(!doc.exists()) return;
+                const data = doc.data();
+                
+                if (role === 'host') updateHostUI(data);
+                if (role === 'player') updatePlayerUI(data);
+            });
+        }
+
+        // --- HOST LOGIC ---
+        function updateHostUI(data) {
+            // Update Player Grid
+            const grid = document.getElementById('playerGrid');
+            const players = data.players || [];
+            
+            // Sort by buzz time if available
+            players.sort((a, b) => {
+                if (a.buzzedAt && b.buzzedAt) return a.buzzedAt - b.buzzedAt;
+                if (a.buzzedAt) return -1; 
+                if (b.buzzedAt) return 1;
+                return 0;
+            });
+
+            grid.innerHTML = players.map((p, i) => {
+                const isBuzzed = p.buzzedAt !== null;
+                return `
+                <div class="glass p-3 flex flex-col items-center justify-between gap-2 transition-all duration-300 ${isBuzzed ? 'border-green-500 bg-green-900/20' : ''}">
+                    <div class="flex justify-between w-full text-xs text-gray-400">
+                        <span>${p.name}</span>
+                        ${isBuzzed ? `<span class="text-yellow-400 font-bold">#${i+1}</span>` : ''}
+                    </div>
+                    <div class="w-full h-16 rounded flex items-center justify-center font-bold text-xl ${isBuzzed ? 'bg-green-500 text-black' : 'bg-white/5 text-gray-600'}">
+                        ${isBuzzed ? 'BUZZED!' : '...'}
+                    </div>
+                    ${isBuzzed ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 px-2 py-1 rounded w-full">Winner?</button>` : ''}
+                </div>
+            `}).join('');
+
+            // Sync Game Status
+            const cutBtn = document.getElementById('cutMusicBtn');
+            if (data.status === 'playing') {
+                cutBtn.innerText = "CUT MUSIC!";
+                cutBtn.className = "flex-1 bg-red-600 hover:bg-red-500 text-white font-black text-xl py-4 rounded-xl shadow-xl transition-all active:scale-95";
+                cutBtn.disabled = false;
+            } else if (data.status === 'cut') {
+                cutBtn.innerText = "RESET ROUND";
+                cutBtn.className = "flex-1 bg-gray-600 hover:bg-gray-500 text-white font-bold text-xl py-4 rounded-xl";
+                cutBtn.disabled = false;
+            } else if (data.status === 'lobby') {
+                cutBtn.innerText = "START ROUND (Play Music First)";
+                cutBtn.disabled = true;
+                cutBtn.className = "flex-1 bg-gray-800 text-gray-500 font-bold text-xl py-4 rounded-xl cursor-not-allowed";
+            }
+        }
+
+        // --- HOST ACTIONS ---
+        window.hostSetStatus = async (status) => {
+            if(!roomId) return;
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            await updateDoc(roomRef, { status: status });
+            
+            // If resetting, clear buzzes
+            if(status === 'playing' || status === 'lobby') {
+                 const snap = await getDoc(roomRef);
+                 const players = snap.data().players || [];
+                 const resetPlayers = players.map(p => ({...p, buzzedAt: null}));
+                 await updateDoc(roomRef, { players: resetPlayers });
+            }
+        };
+
+        window.awardWin = async (winnerId) => {
+             // Logic to increment score could go here
+             alert("Winner selected! Resetting round...");
+             window.hostSetStatus('lobby'); // Go back to lobby to pick next song
+        };
+
+        // --- PLAYER LOGIC ---
+        function updatePlayerUI(data) {
+            const statusEl = document.getElementById('player-status');
+            const buzzBtn = document.getElementById('player-buzz-btn');
+            const buzzContainer = document.getElementById('buzz-container');
+
+            if (data.status === 'playing') {
+                statusEl.innerText = "LISTEN...";
+                statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
+                buzzBtn.disabled = true;
+                buzzBtn.classList.add('opacity-50', 'grayscale');
+                buzzContainer.classList.remove('bg-red-500', 'animate-pulse');
+            } else if (data.status === 'cut') {
+                statusEl.innerText = "SING!";
+                statusEl.className = "text-4xl font-black text-red-500";
+                
+                // Check if I already buzzed
+                const myData = data.players.find(p => p.id === user.uid);
+                if (myData && myData.buzzedAt) {
+                    buzzBtn.innerText = "BUZZED!";
+                    buzzBtn.disabled = true;
+                    buzzBtn.className = "w-64 h-64 rounded-full bg-green-500 text-black font-black text-3xl shadow-[0_0_30px_lime]";
+                } else {
+                    buzzBtn.innerText = "BUZZ!";
+                    buzzBtn.disabled = false;
+                    buzzBtn.className = "w-64 h-64 rounded-full bg-red-600 text-white font-black text-4xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                    // Vibrate phone
+                    if(navigator.vibrate) navigator.vibrate(200);
+                }
+            } else {
+                statusEl.innerText = "Waiting for Host...";
+                statusEl.className = "text-xl text-gray-400";
+                buzzBtn.disabled = true;
+                buzzBtn.classList.add('opacity-50', 'grayscale');
+                buzzBtn.innerText = "WAIT";
+            }
+        }
+
+        window.playerBuzz = async () => {
+            if(!roomId || !user) return;
+            // Optimistic UI
+            const btn = document.getElementById('player-buzz-btn');
+            btn.innerText = "SENDING...";
+            
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            
+            // We need to update ONLY our player entry in the array. 
+            // In Firestore, modifying one item in an array is hard without reading.
+            // Transaction is best here.
+            try {
+                await db.runTransaction(async (t) => {
+                    const docSnap = await t.get(roomRef);
+                    if (!docSnap.exists()) return;
+                    
+                    const players = docSnap.data().players;
+                    const myIndex = players.findIndex(p => p.id === user.uid);
+                    
+                    if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
+                        players[myIndex].buzzedAt = Date.now(); // Server timestamp would be better but Date.now is okay for simple logic
+                        t.update(roomRef, { players: players });
+                    }
+                });
+            } catch(e) {
+                console.error("Buzz failed", e);
+                btn.innerText = "RETRY";
+            }
+        };
+
+    </script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
         
@@ -20,882 +262,283 @@
             background: rgba(255, 255, 255, 0.05);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
         }
 
-        /* Timeline Animations */
-        .timeline-marker {
-            position: absolute;
-            top: -5px;
-            bottom: -5px;
-            width: 2px;
-            background: white;
-            z-index: 10;
-            transition: left 0.2s, background-color 0.1s, height 0.1s, top 0.1s;
-            pointer-events: none; /* Let clicks pass through to container */
-        }
-        .timeline-avatar {
-            position: absolute;
-            top: -28px;
-            transform: translateX(-50%);
-            font-size: 11px;
-            white-space: nowrap;
-            background: white;
-            color: black;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-weight: bold;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-            transition: background-color 0.1s;
-        }
-        .timeline-avatar::after {
-            content: '';
-            position: absolute;
-            bottom: -4px;
-            left: 50%;
-            transform: translateX(-50%);
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 4px solid white;
-        }
-
-        /* Highlight Styles for Closest Match */
-        .marker-closest {
-            background-color: #facc15 !important; /* Yellow-400 */
-            height: 24px !important;
-            top: -12px !important;
-            z-index: 50 !important;
-        }
-        .marker-closest .timeline-avatar {
-            background-color: #facc15 !important;
-        }
-        .marker-closest .timeline-avatar::after {
-            border-top-color: #facc15 !important;
-        }
-
-        /* Interactive Timeline */
-        #timeline-container {
-            cursor: default;
-        }
-        #timeline-container.interactive {
-            cursor: ew-resize;
-        }
-        #timeline-container.interactive:hover {
-            height: 2.5rem; /* Grow slightly on hover */
-            background-color: rgba(0,0,0,0.5);
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
-        ::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+        .spotify-green { color: #1DB954; }
+        .bg-spotify { background-color: #1DB954; }
         
-        .winner-card {
-            border-color: #eab308;
-            background: rgba(234, 179, 8, 0.1);
-            box-shadow: 0 0 20px rgba(234, 179, 8, 0.2);
-        }
+        /* Utility */
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
     </style>
 </head>
-<body class="p-4 h-screen overflow-hidden flex flex-col">
+<body class="p-4 md:p-6 overflow-hidden h-screen flex flex-col">
 
-    <!-- LOGIN OVERLAY -->
-    <div id="login-view" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
-        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2">
-            Win When They're Singing
+    <!-- LOBBY SCREEN -->
+    <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514] p-4">
+        <h1 class="text-5xl md:text-7xl font-black italic tracking-tighter uppercase text-yellow-400 mb-8 text-center leading-none">
+            Win When<br>They're Singing
         </h1>
-        <p class="text-gray-400 mb-8">Web Edition (PKCE)</p>
         
-        <div class="glass p-8 rounded-2xl w-full max-w-md text-center space-y-5">
-            <div class="text-left space-y-1">
-                <label class="text-xs text-gray-400 uppercase font-bold ml-1">Spotify Client ID</label>
-                <input type="text" id="clientIdInput" placeholder="Paste Client ID (32 chars)" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm focus:border-green-500 outline-none transition font-mono text-green-300">
-                
-                <div class="mt-4 p-3 bg-white/5 rounded border border-white/10">
-                    <label class="block text-[10px] text-gray-400 uppercase font-bold mb-1">Required Redirect URI</label>
-                    <p class="text-xs text-gray-500 mb-1">Add this exact URL to your Spotify Dashboard:</p>
-                    <div id="redirectUriDisplay" class="font-mono text-green-300 text-xs break-all bg-black/30 p-2 rounded select-all cursor-text border border-white/5">...</div>
+        <div class="glass p-8 w-full max-w-md space-y-6">
+            <!-- Join Section -->
+            <div class="space-y-3">
+                <label class="text-xs uppercase font-bold text-gray-400">Join Existing Game</label>
+                <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
+                <div class="flex gap-2">
+                    <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
+                    <button onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">
+                        Join Game
+                    </button>
                 </div>
             </div>
 
-            <button onclick="startLogin()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
-                Log in with Spotify
-            </button>
-            
-            <div class="relative py-2">
-                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div>
-                <div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-xs text-gray-500">OR</span></div>
+            <div class="flex items-center gap-4">
+                <div class="h-px bg-white/10 flex-1"></div>
+                <span class="text-xs text-gray-500 font-bold">OR</span>
+                <div class="h-px bg-white/10 flex-1"></div>
             </div>
 
-            <button onclick="enterManualToken()" class="text-xs text-gray-400 hover:text-white underline">
-                Paste Access Token Manually
+            <!-- Create Section -->
+            <button onclick="createRoom()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold py-4 rounded-xl uppercase tracking-wide shadow-lg transition transform hover:scale-105">
+                Host New Game
             </button>
         </div>
     </div>
 
-    <!-- MAIN APP LAYOUT -->
-    <div id="game-view" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[350px_1fr] gap-6 max-w-7xl mx-auto w-full h-full">
-        
-        <!-- LEFT COLUMN: CONTROLS -->
-        <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <!-- Header -->
-            <div class="glass p-4 rounded-xl">
-                <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
-                <div id="status-indicator" class="mt-2 flex items-center gap-2 text-xs font-mono text-red-400">
-                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Disconnected
-                </div>
+    <!-- PLAYER SCREEN (Remote) -->
+    <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
+        <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md">
+            <div class="text-left">
+                <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
+                <div id="player-name-display" class="font-bold text-white text-lg leading-none">---</div>
+            </div>
+            <div class="text-right">
+                <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
+                <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+            </div>
+        </header>
+
+        <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
+            <!-- Background Pulse Circles -->
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
+                <div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div>
+                <div class="w-64 h-64 rounded-full border border-white/20 animate-pulse absolute"></div>
             </div>
 
-            <!-- Settings -->
-            <div class="glass p-4 rounded-xl space-y-4">
-                <div class="flex justify-between items-center">
-                    <label class="text-xs font-bold uppercase text-gray-400">Auto-Cut Music</label>
-                    <input type="checkbox" id="autoCutToggle" checked class="accent-green-500">
-                </div>
-                <div class="space-y-1">
-                    <div class="flex justify-between text-xs text-gray-300">
-                        <span>Cut after:</span>
-                        <span id="cutTimeDisplay" class="font-mono text-green-400">10s</span>
-                    </div>
-                    <input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
-                </div>
-                <div class="pt-2 border-t border-white/10">
-                    <button onclick="logout()" class="text-xs text-red-400 hover:text-white underline w-full text-left">Log Out / Clear Token</button>
-                </div>
-            </div>
-
-            <!-- Search -->
-            <div class="glass p-4 rounded-xl flex-1 flex flex-col min-h-0">
-                <div class="flex gap-2 mb-2">
-                    <input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500">
-                    <button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button>
-                </div>
-                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll">
-                    <div class="text-gray-500 text-xs text-center mt-4">Results appear here...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- RIGHT COLUMN: GAME BOARD -->
-        <div class="flex flex-col gap-4 h-full overflow-hidden relative">
+            <div id="player-status" class="text-xl text-gray-400 mb-8 font-bold tracking-wide z-10 text-center">Waiting...</div>
             
-            <!-- NOW PLAYING & TIMELINE -->
-            <div class="glass p-6 rounded-xl border-t-4 border-yellow-500 relative overflow-hidden">
-                <div class="flex gap-6 items-center relative z-10">
-                    <div id="album-art" class="w-24 h-24 bg-black/40 rounded-lg flex items-center justify-center text-4xl shadow-lg shrink-0 overflow-hidden">🎵</div>
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2 mb-1">
-                            <span class="text-xs text-yellow-500 font-bold uppercase tracking-widest">Current Track</span>
-                            <span id="round-status" class="text-[10px] bg-white/10 px-2 py-0.5 rounded text-gray-300">Idle</span>
-                        </div>
-                        <h2 id="track-name" class="text-3xl font-black leading-tight truncate">Waiting...</h2>
-                        <p id="artist-name" class="text-xl text-gray-400 truncate">---</p>
-                    </div>
-                    <div class="text-right">
-                        <div id="gameTimer" class="text-5xl font-mono font-bold text-white tabular-nums">0.00</div>
-                        <div class="text-xs text-gray-500 uppercase mt-1">Seconds Elapsed</div>
-                    </div>
-                </div>
+            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden">
+                WAIT
+            </button>
+        </main>
+    </div>
 
-                <!-- Timeline Bar -->
-                <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
-                    <!-- Progress Fill -->
-                    <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-xl opacity-80 pointer-events-none"></div>
-                    
-                    <!-- Markers Container -->
-                    <div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div>
-
-                    <!-- Auto Cut Marker -->
-                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 z-0 transition-all duration-300 pointer-events-none" style="left: 0%;">
-                        <div class="absolute -top-4 -translate-x-1/2 text-[10px] text-red-400 font-bold">CUT</div>
-                    </div>
-                </div>
+    <!-- HOST SCREEN (Main Game) -->
+    <div id="host-screen" class="hidden flex-1 grid gap-4 grid-cols-1 md:grid-cols-[300px_1fr] h-full max-w-7xl mx-auto w-full">
+        
+        <!-- Left Sidebar: Controls -->
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            <!-- Room Info -->
+            <div class="glass p-4 rounded-xl bg-gradient-to-br from-yellow-900/20 to-black/20 border-yellow-500/20">
+                <div class="text-xs uppercase font-bold text-yellow-500 mb-1">Room Code</div>
+                <div id="roomCodeDisplay" class="text-5xl font-black text-white tracking-widest font-mono">----</div>
+                <div class="text-[10px] text-gray-400 mt-2">Share this code with players</div>
             </div>
 
-            <!-- CONTROLS -->
-            <div class="grid grid-cols-3 gap-4">
-                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
-                    ▶ Start Round
-                </button>
-
-                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
-                    ⏭ Next Song
-                </button>
+            <!-- Spotify Auth -->
+            <div class="glass p-4 rounded-xl flex-1 flex flex-col">
+                <h2 class="text-xs font-bold uppercase text-gray-400 mb-2">Music Control</h2>
                 
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>
-                    🔊 Reveal Music
-                </button>
-            </div>
+                <!-- Client ID Input (Needed for Host) -->
+                <div id="auth-panel">
+                    <input type="text" id="clientIdInput" placeholder="Client ID" class="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs mb-2">
+                    <button onclick="startLogin()" class="w-full bg-spotify text-black font-bold py-2 rounded text-xs mb-2">Log in Spotify</button>
+                    <div class="text-[10px] text-gray-500 break-all" id="redirectUriDisplay"></div>
+                </div>
 
-            <!-- PLAYERS GRID -->
-            <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll">
+                <!-- Search -->
+                <div class="mt-4 flex flex-col gap-2 flex-1 min-h-0">
+                    <input id="searchQuery" type="text" placeholder="Search Playlists..." class="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm">
+                    <button id="searchBtn" class="bg-white/10 hover:bg-white/20 p-2 rounded text-xs uppercase font-bold">Search</button>
+                    <div id="searchResults" class="flex-1 overflow-y-auto custom-scroll space-y-1 mt-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Main: Game Board -->
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            
+            <!-- Now Playing -->
+            <div class="glass p-6 border-t-4 border-yellow-500">
                 <div class="flex justify-between items-center mb-4">
-                    <h3 class="text-sm font-bold uppercase text-gray-400">Players</h3>
-                    <div class="space-x-2">
-                         <button onclick="addPlayer()" class="text-xs bg-white/10 hover:bg-white/20 px-3 py-1 rounded">+ Add</button>
-                         <button onclick="resetGame()" class="text-xs text-red-400 hover:text-red-300 px-3 py-1">Reset All</button>
+                    <div>
+                        <div class="text-xs text-yellow-500 font-bold uppercase">Now Playing</div>
+                        <div id="trackInfo" class="text-2xl font-black leading-tight">Waiting for Music...</div>
+                        <div id="artistInfo" class="text-lg text-gray-400">---</div>
+                    </div>
+                    <!-- Playback Controls -->
+                    <div class="flex items-center gap-2">
+                        <button id="playPauseBtn" class="p-3 bg-white text-black rounded-full hover:scale-105 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                        <button id="nextTrackBtn" class="p-3 bg-white/10 text-white rounded-full hover:bg-white/20"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
                     </div>
                 </div>
-                
-                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    <!-- Player Cards -->
+
+                <!-- BIG BUTTON -->
+                <button id="cutMusicBtn" class="w-full bg-gray-700 text-gray-500 font-bold text-xl py-4 rounded-xl transition-all" disabled>
+                    START ROUND (Play Music First)
+                </button>
+            </div>
+
+            <!-- Players Grid -->
+            <div class="flex-1 glass p-4 overflow-y-auto custom-scroll">
+                <h3 class="text-xs font-bold uppercase text-gray-400 mb-3">Live Players</h3>
+                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    <!-- Dynamic Players -->
+                    <div class="text-gray-500 text-sm italic col-span-full text-center py-10">Waiting for players to join...</div>
                 </div>
             </div>
 
         </div>
+    </div>
+
+    <!-- Hidden Toast -->
+    <div id="messageToast" class="fixed bottom-8 left-1/2 -translate-x-1/2 glass px-8 py-4 opacity-0 pointer-events-none transition-opacity duration-300 z-50">
+        <span id="toastContent">Message</span>
     </div>
 
     <script>
-        // --- STATE ---
-        let players = [
-            { id: 1, name: 'Player 1', buzzed: null, wins: 0 },
-            { id: 2, name: 'Player 2', buzzed: null, wins: 0 }
-        ];
-        
-        let gameState = {
-            status: 'idle',
-            startTime: 0,
-            pauseTime: 0,
-            autoCutTime: 10,
-            autoCutEnabled: true,
-            hasCut: false,
-            deviceId: null,
-            token: null,
-            timerInterval: null,
-            fadeInterval: null,
-            isDragging: false,
-            spotifyReady: false,
-            playerInitialized: false
-        };
-
+        // --- SPOTIFY LOGIC (Reused from previous, stripped down for Host only) ---
         const CLIENT_ID_KEY = 'wwts_client_id';
+        let deviceId = null;
+        let token = null;
+        let player = null;
 
-        const el = {
-            gameView: document.getElementById('game-view'),
-            loginView: document.getElementById('login-view'),
-            status: document.getElementById('status-indicator'),
-            trackName: document.getElementById('track-name'),
-            artistName: document.getElementById('artist-name'),
-            albumArt: document.getElementById('album-art'),
-            timer: document.getElementById('gameTimer'),
-            timeline: document.getElementById('timeline-progress'),
-            timelineContainer: document.getElementById('timeline-container'),
-            markers: document.getElementById('timeline-markers'),
-            cutMarker: document.getElementById('cut-marker'),
-            playerGrid: document.getElementById('playerGrid'),
-            revealBtn: document.getElementById('revealBtn'),
-            startRoundBtn: document.getElementById('startRoundBtn'),
-            cutTimeSlider: document.getElementById('cutTimeSlider'),
-            cutTimeDisplay: document.getElementById('cutTimeDisplay'),
-            autoCutToggle: document.getElementById('autoCutToggle'),
-            roundStatus: document.getElementById('round-status')
-        };
+        // Init
+        window.addEventListener('load', () => {
+             // Auth Callback Check
+             const hash = window.location.hash.substring(1);
+             const params = new URLSearchParams(hash);
+             const accessToken = params.get('access_token');
+             
+             if(accessToken) {
+                 localStorage.setItem('wwts_host_token', accessToken);
+                 window.location.hash = '';
+                 token = accessToken;
+                 // Assume if we have a token, we are the host returning
+                 document.getElementById('lobby-screen').classList.add('hidden');
+                 document.getElementById('host-screen').classList.remove('hidden');
+                 // Note: Room creation state is lost on refresh in this simple version unless we store roomId in localStorage too.
+                 // For now, Host might need to recreate room or we handle persistence later.
+                 alert("Logged in! Please 'Create Room' again or implement persistence.");
+                 document.getElementById('lobby-screen').classList.remove('hidden');
+                 document.getElementById('host-screen').classList.add('hidden');
+             }
 
-        // --- CRYPTO HELPERS FOR PKCE ---
-        function generateRandomString(length) {
-            let text = '';
-            let possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            for (let i = 0; i < length; i++) {
-                text += possible.charAt(Math.floor(Math.random() * possible.length));
-            }
-            return text;
-        }
+             // Fill Client ID
+             const storedId = localStorage.getItem(CLIENT_ID_KEY);
+             if(storedId) document.getElementById('clientIdInput').value = storedId;
+             
+             // Redirect URI
+             let redirect = window.location.href.split('#')[0].split('?')[0];
+             redirect = redirect.replace('index.html', '');
+             document.getElementById('redirectUriDisplay').innerText = redirect;
+        });
 
-        async function generateCodeChallenge(codeVerifier) {
-            const data = new TextEncoder().encode(codeVerifier);
-            const digest = await window.crypto.subtle.digest('SHA-256', data);
-            return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)]))
-                .replace(/\+/g, '-')
-                .replace(/\//g, '_')
-                .replace(/=+$/, '');
-        }
-
-        // --- AUTH & INIT ---
-        window.onSpotifyWebPlaybackSDKReady = () => {
-            console.log("WWTS Debug: Spotify SDK is ready.");
-            gameState.spotifyReady = true;
-            if (gameState.token && !gameState.playerInitialized) {
-                initSpotifyPlayer();
-            }
-        };
-
-        async function checkAuth() {
-            // Check for Auth Code in URL (PKCE Flow Return)
-            const params = new URLSearchParams(window.location.search);
-            const code = params.get('code');
-            const error = params.get('error');
-
-            if (error) {
-                alert("Login Error: " + error);
-                window.history.replaceState({}, document.title, window.location.pathname);
-                initLoginView();
-                return;
-            }
-
-            if (code) {
-                // Exchange code for token
-                console.log("WWTS Debug: Code found, exchanging for token...");
-                await exchangeToken(code);
-                // Clean URL
-                window.history.replaceState({}, document.title, window.location.pathname);
-            }
-
-            // Check for stored token
-            const storedToken = localStorage.getItem('wwts_local_token');
-            const expiry = localStorage.getItem('wwts_token_expiry');
-            
-            // Basic expiry check (if we stored one, otherwise assume valid till 401)
-            const now = Date.now();
-            if (storedToken && expiry && now > parseInt(expiry)) {
-                console.log("Token expired.");
-                logout();
-                return;
-            }
-
-            if (storedToken) {
-                console.log("WWTS Debug: Token found.");
-                gameState.token = storedToken;
-                el.loginView.classList.add('hidden');
-                el.gameView.classList.remove('hidden');
-                
-                if (gameState.spotifyReady && !gameState.playerInitialized) {
-                    initSpotifyPlayer();
-                }
-                
-                updateCutMarker();
-                renderPlayers();
-            } else {
-                console.log("WWTS Debug: No token found.");
-                initLoginView();
-            }
-        }
-
-        function getRedirectUri() {
-            // Strip index.html, remove trailing slash if present, then add it back consistently?
-            // Actually, Spotify matches strict strings.
-            // Let's use the exact current path without query params/hash.
-            let uri = window.location.origin + window.location.pathname;
-            // Remove 'index.html' if it exists
-            uri = uri.replace(/\/index\.html$/, '/');
-            // Remove trailing slash to be safe? No, let's KEEP trailing slash if it's a folder.
-            // But if it's just origin like '...io/wwts2', it might not have slash.
-            
-            // Best Practice: Use what the browser reports, but strip index.html
-            return uri;
-        }
-
-        function initLoginView() {
-            const storedId = localStorage.getItem(CLIENT_ID_KEY);
-            if(storedId) document.getElementById('clientIdInput').value = storedId;
-            document.getElementById('redirectUriDisplay').innerText = getRedirectUri();
-        }
-
-        window.startLogin = async () => {
-            const clientIdInput = document.getElementById('clientIdInput').value.trim();
-            const clientId = clientIdInput.replace(/[^a-zA-Z0-9]/g, '');
-
-            if(clientId.length !== 32) return alert("Invalid Client ID: Must be 32 characters.");
-            
+        window.startLogin = () => {
+            const clientId = document.getElementById('clientIdInput').value.trim();
+            if(!clientId) return alert("Enter Client ID");
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             
-            const redirectUri = getRedirectUri();
-            const verifier = generateRandomString(128);
-            const challenge = await generateCodeChallenge(verifier);
-
-            localStorage.setItem("wwts_verifier", verifier);
-
-            const scope = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            let redirectUri = window.location.href.split('#')[0].split('?')[0];
+            redirectUri = redirectUri.replace('index.html', '');
             
-            const args = new URLSearchParams({
-                response_type: 'code',
-                client_id: clientId,
-                scope: scope,
-                redirect_uri: redirectUri,
-                code_challenge_method: 'S256',
-                code_challenge: challenge,
-                show_dialog: 'true'
-            });
-
-            window.location = 'https://accounts.spotify.com/authorize?' + args;
+            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            const url = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&show_dialog=true`;
+            window.location.href = url;
         };
 
-        async function exchangeToken(code) {
-            const verifier = localStorage.getItem("wwts_verifier");
-            const clientId = localStorage.getItem(CLIENT_ID_KEY);
-            const redirectUri = getRedirectUri();
-
-            if (!verifier || !clientId) {
-                console.error("Missing verifier or client ID");
-                return;
-            }
-
-            const params = new URLSearchParams({
-                client_id: clientId,
-                grant_type: 'authorization_code',
-                code: code,
-                redirect_uri: redirectUri,
-                code_verifier: verifier,
-            });
-
-            try {
-                const response = await fetch('https://accounts.spotify.com/api/token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: params
-                });
-
-                const data = await response.json();
-                
-                if (data.access_token) {
-                    localStorage.setItem('wwts_local_token', data.access_token);
-                    // Store expiry (usually 3600s)
-                    localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
-                    
-                    if (data.refresh_token) {
-                        localStorage.setItem('wwts_refresh_token', data.refresh_token);
-                    }
-                    
-                    // Reload to clear query params and init
-                    window.location.href = redirectUri;
-                } else {
-                    alert("Token Exchange Failed: " + (data.error_description || data.error));
-                    initLoginView();
-                }
-            } catch (e) {
-                console.error("Token Exchange Error", e);
-                alert("Network error during token exchange.");
-            }
-        }
-
-        window.enterManualToken = () => {
-            const token = prompt("Paste your temporary access token:");
-            if(token) {
-                 localStorage.setItem('wwts_local_token', token);
-                 window.location.reload();
-            }
+        // Initialize Player when token available
+        window.onSpotifyWebPlaybackSDKReady = () => {
+             const storedToken = localStorage.getItem('wwts_host_token');
+             if(storedToken) {
+                 token = storedToken;
+                 initSpotifyPlayer();
+             }
         };
-        
-        window.logout = () => {
-            localStorage.removeItem('wwts_local_token');
-            localStorage.removeItem('wwts_verifier');
-            localStorage.removeItem('wwts_token_expiry');
-            window.location.reload();
-        };
-        
-        function handleAuthError() {
-            console.log("Session expired or invalid token.");
-            localStorage.removeItem('wwts_local_token');
-            el.gameView.classList.add('hidden');
-            el.loginView.classList.remove('hidden');
-            initLoginView();
-            alert("Spotify session expired. Please log in again.");
-        }
-
-        let player;
 
         function initSpotifyPlayer() {
-            if (gameState.playerInitialized) return;
-            gameState.playerInitialized = true;
-            console.log("WWTS Debug: Initializing Spotify Player...");
-
             player = new Spotify.Player({
                 name: "WWTS Host",
-                getOAuthToken: cb => { cb(gameState.token); },
+                getOAuthToken: cb => { cb(token); },
                 volume: 0.8
-            });
-            
-            player.addListener('authentication_error', ({ message }) => {
-                console.error('Auth Error:', message);
-                handleAuthError();
             });
 
             player.addListener('ready', ({ device_id }) => {
+                deviceId = device_id;
                 console.log('Ready with Device ID', device_id);
-                gameState.deviceId = device_id;
-                el.status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
-                el.status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
-                transferPlayback(device_id);
             });
 
             player.addListener('player_state_changed', state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                el.trackName.innerText = track.name;
-                el.artistName.innerText = track.artists[0].name;
-                el.albumArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                document.getElementById('trackInfo').innerText = track.name;
+                document.getElementById('artistInfo').innerText = track.artists[0].name;
 
-                if (gameState.status === 'starting' && !state.paused) {
-                    gameState.status = 'playing';
-                    gameState.startTime = performance.now() - state.position;
-                    updateRoundStatus("Playing");
-                    loop();
+                // Auto-sync status?
+                // If we are "lobby" but music starts playing, maybe switch to "playing"?
+                if (!state.paused && document.getElementById('cutMusicBtn').innerText.includes("START")) {
+                     window.hostSetStatus('playing');
                 }
             });
 
             player.connect();
         }
 
-        async function transferPlayback(deviceId) {
-            const res = await fetch('https://api.spotify.com/v1/me/player', {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${gameState.token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device_ids: [deviceId], play: false })
-            });
-            if (res.status === 401) handleAuthError();
-        }
-
-        // --- GAME LOGIC ---
-
-        async function restartRound() {
-            if (!gameState.deviceId) return;
-            resetRoundState();
-            gameState.status = 'starting';
-            updateRoundStatus("Syncing...");
-            el.startRoundBtn.innerText = "↺ Restart Round";
-            await player.setVolume(0.8);
-            await player.seek(0);
-            await player.resume();
-        }
-
-        async function nextRound() {
-            if (!gameState.deviceId) return;
-            resetRoundState();
-            gameState.status = 'starting';
-            updateRoundStatus("Loading...");
-            el.startRoundBtn.innerText = "↺ Restart Round";
-            await player.setVolume(0.8);
-            await player.nextTrack();
-        }
-
-        function resetRoundState() {
-            gameState.hasCut = false;
-            if (gameState.fadeInterval) {
-                clearInterval(gameState.fadeInterval);
-                gameState.fadeInterval = null;
-            }
-            players.forEach(p => p.buzzed = null);
-            
-            el.revealBtn.disabled = true;
-            el.revealBtn.innerText = "🔊 Reveal Music";
-            el.revealBtn.classList.remove('animate-pulse', 'bg-yellow-600', 'hover:bg-yellow-500');
-            el.revealBtn.classList.add('bg-green-600', 'hover:bg-green-500');
-            el.timelineContainer.classList.remove('interactive');
-            el.markers.innerHTML = '';
-            el.timer.innerText = "0.00";
-            el.timeline.style.width = "0%";
-            if (gameState.timerInterval) cancelAnimationFrame(gameState.timerInterval);
-            renderPlayers();
-        }
-
-        function loop() {
-            if (gameState.status !== 'playing' && gameState.status !== 'revealing' && gameState.status !== 'paused_reveal') return;
-
-            let elapsed;
-            if (gameState.isDragging) {
-                 requestAnimationFrame(loop);
-                 return;
-            }
-
-            if (gameState.status === 'paused_reveal') {
-                elapsed = gameState.pauseTime;
-            } else {
-                const now = performance.now();
-                elapsed = (now - gameState.startTime) / 1000;
-            }
-
-            updateUIForTime(elapsed);
-
-            if (gameState.status === 'playing' && gameState.autoCutEnabled && !gameState.hasCut && elapsed >= gameState.autoCutTime) {
-                cutMusic();
-            }
-
-            if (gameState.status === 'revealing' || gameState.status === 'paused_reveal') {
-                highlightClosest(elapsed);
-            }
-
-            gameState.timerInterval = requestAnimationFrame(loop);
-        }
-
-        function updateUIForTime(elapsed) {
-            el.timer.innerText = elapsed.toFixed(2);
-            const percentage = Math.min((elapsed / 60) * 100, 100);
-            el.timeline.style.width = `${percentage}%`;
-        }
-
-        function highlightClosest(elapsed) {
-            let closestId = null;
-            let minDiff = Infinity;
-
-            players.forEach(p => {
-                if (p.buzzed !== null) {
-                    const diff = Math.abs(elapsed - p.buzzed);
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        closestId = p.id;
-                    }
-                }
-            });
-
-            players.forEach(p => {
-                const card = document.getElementById(`player-card-${p.id}`);
-                const marker = document.getElementById(`marker-${p.id}`);
-                
-                if (p.id === closestId) {
-                    if(card) {
-                        card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                        card.classList.remove('border-green-500');
-                    }
-                    if(marker) marker.classList.add('marker-closest');
-                } else {
-                    if(card) {
-                        card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                        if(p.buzzed) card.classList.add('border-green-500'); 
-                    }
-                    if(marker) marker.classList.remove('marker-closest');
-                }
-            });
-        }
-
-        function cutMusic() {
-            gameState.hasCut = true;
-            let vol = 0.8;
-            if (gameState.fadeInterval) clearInterval(gameState.fadeInterval);
-            
-            gameState.fadeInterval = setInterval(() => {
-                vol = Math.max(0, vol - 0.05); 
-                if(player) player.setVolume(vol);
-                if (vol <= 0) {
-                    clearInterval(gameState.fadeInterval);
-                    gameState.fadeInterval = null;
-                }
-            }, 50); 
-
-            const cutPos = (gameState.autoCutTime / 60) * 100;
-            const marker = document.createElement('div');
-            marker.className = 'absolute top-0 bottom-0 w-0.5 bg-red-500 z-20';
-            marker.style.left = `${cutPos}%`;
-            el.markers.appendChild(marker);
-            
-            updateRoundStatus("Music Cut");
-            renderPlayers();
-        }
-
-        function buzz(playerId) {
-            if (gameState.status !== 'playing') return;
-            if (!gameState.hasCut) return; 
-            
-            const playerObj = players.find(p => p.id === playerId);
-            if (playerObj.buzzed !== null) return; 
-
-            const elapsed = (performance.now() - gameState.startTime) / 1000;
-            playerObj.buzzed = elapsed;
-
-            const pos = (elapsed / 60) * 100;
-            const marker = document.createElement('div');
-            marker.id = `marker-${playerId}`; 
-            marker.className = 'timeline-marker bg-white';
-            marker.style.left = `${pos}%`;
-            marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${playerObj.name}</div>`;
-            el.markers.appendChild(marker);
-
-            renderPlayers();
-
-            if (players.every(p => p.buzzed !== null)) {
-                endGuessingPhase();
-            }
-        }
-
-        async function endGuessingPhase() {
-            gameState.status = 'complete';
-            cancelAnimationFrame(gameState.timerInterval);
-            updateRoundStatus("Guesses In");
-            await player.pause();
-            await player.seek(0);
-            await player.setVolume(0.8);
-            el.revealBtn.disabled = false;
-            el.timelineContainer.classList.add('interactive');
-            renderPlayers();
-        }
-
-        async function toggleReveal() {
-            if (gameState.status === 'revealing') {
-                gameState.status = 'paused_reveal';
-                const now = performance.now();
-                gameState.pauseTime = (now - gameState.startTime) / 1000;
-                updateUIForTime(gameState.pauseTime);
-                el.revealBtn.innerText = "▶ Resume Reveal";
-                el.revealBtn.classList.replace('bg-yellow-600', 'bg-green-600');
-                updateRoundStatus("Paused");
-                await player.pause();
-            } else {
-                if (gameState.status === 'paused_reveal') {
-                    gameState.startTime = performance.now() - (gameState.pauseTime * 1000);
-                } else {
-                    gameState.startTime = performance.now(); 
-                }
-                await player.resume();
-                gameState.status = 'revealing';
-                el.revealBtn.innerText = "⏸ Pause Reveal";
-                el.revealBtn.classList.replace('bg-green-600', 'bg-yellow-600');
-                el.revealBtn.classList.replace('hover:bg-green-500', 'hover:bg-yellow-500');
-                updateRoundStatus("Revealing");
-                loop(); 
-            }
-        }
-
-        async function selectWinner(playerId) {
-            if(gameState.status === 'revealing') {
-                await toggleReveal(); 
-            } else if (gameState.status !== 'paused_reveal') {
-                gameState.status = 'paused_reveal';
-                if(gameState.status === 'complete') {
-                    gameState.pauseTime = 0;
-                } else {
-                    const now = performance.now();
-                    gameState.pauseTime = (now - gameState.startTime) / 1000;
-                }
-                await player.pause(); 
-            }
-            const p = players.find(p => p.id === playerId);
-            if(p) p.wins++;
-            alert(`${p.name} wins the round!`);
-            renderPlayers();
-        }
-
-        // --- SCRUBBING ---
-        function getScrubTime(e) {
-            const rect = el.timelineContainer.getBoundingClientRect();
-            let x = e.clientX - rect.left;
-            x = Math.max(0, Math.min(x, rect.width));
-            const pct = x / rect.width;
-            return pct * 60; 
-        }
-
-        el.timelineContainer.addEventListener('mousedown', (e) => {
-            if (gameState.status !== 'revealing' && gameState.status !== 'paused_reveal' && gameState.status !== 'complete') return;
-            gameState.isDragging = true;
-            handleScrubMove(e);
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (gameState.isDragging) handleScrubMove(e);
-        });
-
-        window.addEventListener('mouseup', async (e) => {
-            if (gameState.isDragging) {
-                gameState.isDragging = false;
-                const seconds = getScrubTime(e);
-                if (gameState.status === 'paused_reveal') {
-                    gameState.pauseTime = seconds;
-                } else {
-                    gameState.startTime = performance.now() - (seconds * 1000);
-                }
-                await player.seek(seconds * 1000);
-            }
-        });
-
-        function handleScrubMove(e) {
-            const seconds = getScrubTime(e);
-            updateUIForTime(seconds);
-            highlightClosest(seconds);
-        }
-
-        // --- UI HANDLERS ---
-        function updateCutMarker() {
-            const pct = (gameState.autoCutTime / 60) * 100;
-            el.cutMarker.style.left = `${pct}%`;
-        }
-        function updateRoundStatus(text) {
-            el.roundStatus.innerText = text;
-        }
-        el.cutTimeSlider.addEventListener('input', (e) => {
-            gameState.autoCutTime = parseInt(e.target.value);
-            el.cutTimeDisplay.innerText = `${gameState.autoCutTime}s`;
-            updateCutMarker();
-        });
-        el.autoCutToggle.addEventListener('change', (e) => {
-            gameState.autoCutEnabled = e.target.checked;
-            el.cutMarker.style.display = e.target.checked ? 'block' : 'none';
-        });
-        document.getElementById('startRoundBtn').onclick = restartRound;
-        document.getElementById('nextRoundBtn').onclick = nextRound;
-        el.revealBtn.onclick = toggleReveal;
-
-        window.addPlayer = () => {
-            const name = prompt("Player Name:");
-            if (name) {
-                players.push({ id: Date.now(), name, buzzed: null, wins: 0 });
-                renderPlayers();
-            }
+        // Host Controls
+        document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
+        document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
+        
+        document.getElementById('cutMusicBtn').onclick = async () => {
+             const btn = document.getElementById('cutMusicBtn');
+             // Logic depends on current text/state, which is synced from Firestore via updateHostUI
+             // We just trigger state changes here.
+             
+             if (btn.innerText.includes("CUT")) {
+                 await player.pause();
+                 window.hostSetStatus('cut');
+             } else if (btn.innerText.includes("RESET")) {
+                 window.hostSetStatus('lobby');
+             } else {
+                 alert("Play music on Spotify first!");
+             }
         };
 
-        window.resetGame = () => {
-            players.forEach(p => { p.buzzed = null; p.wins = 0; });
-            gameState.status = 'idle';
-            cancelAnimationFrame(gameState.timerInterval);
-            el.startRoundBtn.innerText = "▶ Start Round";
-            renderPlayers();
-        };
-
-        function renderPlayers() {
-            el.playerGrid.innerHTML = players.map(p => {
-                const isBuzzed = p.buzzed !== null;
-                const canPickWinner = gameState.status === 'revealing' || gameState.status === 'paused_reveal' || gameState.status === 'complete';
-                const isButtonDisabled = gameState.status !== 'playing' || !gameState.hasCut || isBuzzed;
-                
-                return `
-                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'border border-green-500 bg-green-900/20' : ''} ${canPickWinner ? 'winner-card-hover' : ''}">
-                    <div class="flex justify-between w-full text-xs text-gray-400 px-1">
-                        <span>${p.name}</span>
-                        <span class="text-yellow-500">🏆 ${p.wins}</span>
-                    </div>
-                    <button onclick="buzz(${p.id})" ${isButtonDisabled ? 'disabled' : ''} 
-                        class="w-full py-6 rounded-lg font-black text-xl transition transform active:scale-95 shadow-lg
-                        ${isBuzzed ? 'bg-gray-700 text-gray-400 cursor-default' : 
-                          isButtonDisabled && gameState.status === 'playing' ? 'bg-gray-700 text-gray-500 cursor-not-allowed opacity-50' : 
-                          'bg-red-600 hover:bg-red-500 text-white shadow-red-900/50'}">
-                        ${isBuzzed ? p.buzzed.toFixed(2) + 's' : (gameState.hasCut ? 'SING!' : 'WAIT')}
-                    </button>
-                    ${canPickWinner ? `
-                        <button onclick="selectWinner(${p.id})" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">
-                            Select Winner
-                        </button>
-                    ` : ''}
-                </div>
-            `}).join('');
-        }
-
-        document.getElementById('search-btn').onclick = async () => {
-            const query = document.getElementById('search-input').value;
+        // Search (Reused)
+        document.getElementById('searchBtn').onclick = async () => {
+            const query = document.getElementById('searchQuery').value;
+            if(!token) return alert("Log in first");
             const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
-                headers: { 'Authorization': `Bearer ${gameState.token}` }
+                headers: { 'Authorization': `Bearer ${token}` }
             });
-            if (res.status === 401) { handleAuthError(); return; }
             const data = await res.json();
-            document.getElementById('results').innerHTML = data.playlists.items
-                .filter(p => p)
-                .map(p => `
-                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
-                    <img src="${p.images[0]?.url}" class="w-10 h-10 rounded shadow">
-                    <div class="min-w-0">
-                        <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
-                        <div class="text-[10px] text-gray-400">${p.tracks.total} tracks</div>
-                    </div>
+            document.getElementById('searchResults').innerHTML = data.playlists.items.map(p => `
+                <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-2 p-2 rounded hover:bg-white/10 cursor-pointer">
+                    <img src="${p.images[0]?.url}" class="w-8 h-8 rounded">
+                    <div class="text-xs truncate text-gray-300">${p.name}</div>
                 </div>
             `).join('');
         };
 
         window.playPlaylist = async (uri) => {
-            if(!gameState.deviceId) return alert("Wait for connection...");
-            const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${gameState.deviceId}`, {
+             if(!deviceId) return alert("Player not ready");
+             await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                 method: 'PUT',
-                headers: { 'Authorization': `Bearer ${gameState.token}`, 'Content-Type': 'application/json' },
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ context_uri: uri })
             });
-            if (res.status === 401) handleAuthError();
         };
-
-        // Boot
-        checkAuth();
 
     </script>
 </body>
