@@ -287,11 +287,10 @@
             roundStatus: document.getElementById('round-status')
         };
 
-        // --- GLOBAL SPOTIFY CALLBACK (Must be defined immediately) ---
+        // --- GLOBAL SPOTIFY CALLBACK ---
         window.onSpotifyWebPlaybackSDKReady = () => {
-            console.log("Spotify SDK is ready.");
+            console.log("WWTS Debug: Spotify SDK is ready.");
             gameState.spotifyReady = true;
-            // Attempt init if we already have a token
             if (gameState.token && !gameState.playerInitialized) {
                 initSpotifyPlayer();
             }
@@ -299,32 +298,49 @@
 
         // --- AUTH & INIT ---
         function checkAuth() {
-            const params = new URLSearchParams(window.location.hash.substring(1));
-            const urlToken = params.get('access_token');
-            const storedToken = localStorage.getItem('wwts_local_token');
+            // Robust hash parsing
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+            let accessToken = params.get('access_token');
             
-            const token = urlToken || storedToken;
+            // Fallback for messy URLs (sometimes happens with redirects)
+            if (!accessToken && hash.includes('access_token=')) {
+                try {
+                    const match = hash.match(/access_token=([^&]*)/);
+                    if (match) accessToken = match[1];
+                } catch(e) { console.log("WWTS Debug: Regex parse failed", e); }
+            }
 
+            const storedToken = localStorage.getItem('wwts_local_token');
+            const token = accessToken || storedToken;
+
+            if(hash.length > 0) console.log("WWTS Debug: Hash detected, length:", hash.length);
+            
             if (token) {
-                if (urlToken) {
-                    localStorage.setItem('wwts_local_token', urlToken);
-                    // Updated to use pathname to support GitHub Pages subdirectories (e.g., /my-repo/)
-                    window.history.pushState({}, document.title, window.location.pathname);
+                console.log("WWTS Debug: Token found, initializing app.");
+                if (accessToken) {
+                    localStorage.setItem('wwts_local_token', accessToken);
+                    // Clean URL - Keep pathname to support subdirectories
+                    window.history.replaceState({}, document.title, window.location.pathname);
                 }
                 
                 gameState.token = token;
                 el.loginView.classList.add('hidden');
                 el.gameView.classList.remove('hidden');
                 
-                // Attempt init if SDK loaded first
                 if (gameState.spotifyReady && !gameState.playerInitialized) {
                     initSpotifyPlayer();
                 }
                 
-                // Init UI
                 updateCutMarker();
                 renderPlayers();
             } else {
+                console.log("WWTS Debug: No token found, showing login.");
+                // Check for errors in query params
+                const searchParams = new URLSearchParams(window.location.search);
+                if (searchParams.get('error')) {
+                    alert("Spotify Login Error: " + searchParams.get('error'));
+                }
                 initLoginView();
             }
         }
@@ -333,8 +349,8 @@
             const storedId = localStorage.getItem(CLIENT_ID_KEY);
             if(storedId) document.getElementById('clientIdInput').value = storedId;
             
-            // Show the redirect URI so they can copy it
-            const redirect = window.location.href.split('#')[0]; 
+            // Show the exact redirect URI being used
+            const redirect = window.location.origin + window.location.pathname;
             document.getElementById('redirectUriDisplay').innerText = redirect;
         }
 
@@ -344,7 +360,18 @@
             
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             
-            const redirectUri = window.location.href.split('#')[0];
+            // CLEAN REDIRECT URI: Origin + Pathname (No query, no hash)
+            // Example: https://chrisd2020.github.io/wwts2/
+            let redirectUri = window.location.origin + window.location.pathname;
+            
+            // Remove trailing 'index.html' if present, but keep trailing slash if it's a folder
+            redirectUri = redirectUri.replace('index.html', '');
+            if(redirectUri.endsWith('/') && redirectUri.length > 1) {
+                 // Keep it as is, standard practice
+            }
+
+            console.log("WWTS Debug: Redirecting to:", redirectUri);
+
             const scopes = 'streaming user-read-email user-read-private user-modify-playback-state';
             const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}`;
             
@@ -367,12 +394,9 @@
         function handleAuthError() {
             console.log("Session expired or invalid token.");
             localStorage.removeItem('wwts_local_token');
-            
-            // Return to login screen
             el.gameView.classList.add('hidden');
             el.loginView.classList.remove('hidden');
             initLoginView();
-            
             alert("Spotify session expired. Please log in again.");
         }
 
@@ -381,7 +405,7 @@
         function initSpotifyPlayer() {
             if (gameState.playerInitialized) return;
             gameState.playerInitialized = true;
-            console.log("Initializing Spotify Player...");
+            console.log("WWTS Debug: Initializing Spotify Player...");
 
             player = new Spotify.Player({
                 name: "WWTS Host",
@@ -389,7 +413,6 @@
                 volume: 0.8
             });
             
-            // --- AUTH ERROR DETECTION ---
             player.addListener('authentication_error', ({ message }) => {
                 console.error('Auth Error:', message);
                 handleAuthError();
@@ -405,13 +428,11 @@
 
             player.addListener('player_state_changed', state => {
                 if (!state) return;
-                
                 const track = state.track_window.current_track;
                 el.trackName.innerText = track.name;
                 el.artistName.innerText = track.artists[0].name;
                 el.albumArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
 
-                // SYNC LOGIC: If we are 'starting' and Spotify finally plays, switch to 'playing'
                 if (gameState.status === 'starting' && !state.paused) {
                     gameState.status = 'playing';
                     gameState.startTime = performance.now() - state.position;
@@ -439,10 +460,7 @@
             resetRoundState();
             gameState.status = 'starting';
             updateRoundStatus("Syncing...");
-            
-            // UPDATE BUTTON TEXT
             el.startRoundBtn.innerText = "↺ Restart Round";
-            
             await player.setVolume(0.8);
             await player.seek(0);
             await player.resume();
@@ -453,17 +471,13 @@
             resetRoundState();
             gameState.status = 'starting';
             updateRoundStatus("Loading...");
-            
-            // UPDATE BUTTON TEXT
             el.startRoundBtn.innerText = "↺ Restart Round";
-
             await player.setVolume(0.8);
             await player.nextTrack();
         }
 
         function resetRoundState() {
             gameState.hasCut = false;
-            // Stop fading if active
             if (gameState.fadeInterval) {
                 clearInterval(gameState.fadeInterval);
                 gameState.fadeInterval = null;
@@ -475,29 +489,23 @@
             el.revealBtn.classList.remove('animate-pulse', 'bg-yellow-600', 'hover:bg-yellow-500');
             el.revealBtn.classList.add('bg-green-600', 'hover:bg-green-500');
             el.timelineContainer.classList.remove('interactive');
-            
             el.markers.innerHTML = '';
             el.timer.innerText = "0.00";
             el.timeline.style.width = "0%";
-            
             if (gameState.timerInterval) cancelAnimationFrame(gameState.timerInterval);
             renderPlayers();
         }
 
         function loop() {
-            // Stop loop conditions
             if (gameState.status !== 'playing' && gameState.status !== 'revealing' && gameState.status !== 'paused_reveal') return;
 
             let elapsed;
-            
             if (gameState.isDragging) {
-                 // Don't update time from clock while dragging, wait for mousemove to set it
                  requestAnimationFrame(loop);
                  return;
             }
 
             if (gameState.status === 'paused_reveal') {
-                // Time is frozen at pauseTime
                 elapsed = gameState.pauseTime;
             } else {
                 const now = performance.now();
@@ -506,12 +514,10 @@
 
             updateUIForTime(elapsed);
 
-            // Auto-Cut Logic
             if (gameState.status === 'playing' && gameState.autoCutEnabled && !gameState.hasCut && elapsed >= gameState.autoCutTime) {
                 cutMusic();
             }
 
-            // Highlighting Logic (Run continuously so dragging updates it)
             if (gameState.status === 'revealing' || gameState.status === 'paused_reveal') {
                 highlightClosest(elapsed);
             }
@@ -561,20 +567,17 @@
 
         function cutMusic() {
             gameState.hasCut = true;
-            
-            // FADE OUT LOGIC
             let vol = 0.8;
             if (gameState.fadeInterval) clearInterval(gameState.fadeInterval);
             
             gameState.fadeInterval = setInterval(() => {
-                vol = Math.max(0, vol - 0.05); // Decrease volume
+                vol = Math.max(0, vol - 0.05); 
                 if(player) player.setVolume(vol);
-                
                 if (vol <= 0) {
                     clearInterval(gameState.fadeInterval);
                     gameState.fadeInterval = null;
                 }
-            }, 50); // ~800ms fade
+            }, 50); 
 
             const cutPos = (gameState.autoCutTime / 60) * 100;
             const marker = document.createElement('div');
@@ -615,46 +618,30 @@
             gameState.status = 'complete';
             cancelAnimationFrame(gameState.timerInterval);
             updateRoundStatus("Guesses In");
-            
             await player.pause();
             await player.seek(0);
             await player.setVolume(0.8);
-
             el.revealBtn.disabled = false;
-            el.timelineContainer.classList.add('interactive'); // Enable Dragging
+            el.timelineContainer.classList.add('interactive');
             renderPlayers();
         }
 
         async function toggleReveal() {
             if (gameState.status === 'revealing') {
-                // PAUSE
-                // 1. FREEZE STATE IMMEDIATELY
                 gameState.status = 'paused_reveal';
                 const now = performance.now();
                 gameState.pauseTime = (now - gameState.startTime) / 1000;
-
-                // 2. FORCE UI UPDATE to prevent visual mismatch
                 updateUIForTime(gameState.pauseTime);
-
-                // 3. UPDATE BUTTONS
                 el.revealBtn.innerText = "▶ Resume Reveal";
                 el.revealBtn.classList.replace('bg-yellow-600', 'bg-green-600');
                 updateRoundStatus("Paused");
-
-                // 4. CALL SPOTIFY
                 await player.pause();
-                
             } else {
-                // RESUME (or START)
                 if (gameState.status === 'paused_reveal') {
-                    // Resuming: Adjust StartTime so elapsed matches where we paused
-                    // newStart = now - (pauseTime * 1000)
                     gameState.startTime = performance.now() - (gameState.pauseTime * 1000);
                 } else {
-                    // Starting fresh
                     gameState.startTime = performance.now(); 
                 }
-                
                 await player.resume();
                 gameState.status = 'revealing';
                 el.revealBtn.innerText = "⏸ Pause Reveal";
@@ -666,11 +653,9 @@
         }
 
         async function selectWinner(playerId) {
-            // PAUSE ON WINNER SELECTION
             if(gameState.status === 'revealing') {
-                await toggleReveal(); // Reuse this logic to pause cleanly and update UI
+                await toggleReveal(); 
             } else if (gameState.status !== 'paused_reveal') {
-                // Manual pause fallback
                 gameState.status = 'paused_reveal';
                 if(gameState.status === 'complete') {
                     gameState.pauseTime = 0;
@@ -680,25 +665,23 @@
                 }
                 await player.pause(); 
             }
-
             const p = players.find(p => p.id === playerId);
             if(p) p.wins++;
             alert(`${p.name} wins the round!`);
             renderPlayers();
         }
 
-        // --- SCRUBBING LOGIC ---
+        // --- SCRUBBING ---
         function getScrubTime(e) {
             const rect = el.timelineContainer.getBoundingClientRect();
             let x = e.clientX - rect.left;
             x = Math.max(0, Math.min(x, rect.width));
             const pct = x / rect.width;
-            return pct * 60; // 0-60s scale
+            return pct * 60; 
         }
 
         el.timelineContainer.addEventListener('mousedown', (e) => {
             if (gameState.status !== 'revealing' && gameState.status !== 'paused_reveal' && gameState.status !== 'complete') return;
-            
             gameState.isDragging = true;
             handleScrubMove(e);
         });
@@ -711,15 +694,11 @@
             if (gameState.isDragging) {
                 gameState.isDragging = false;
                 const seconds = getScrubTime(e);
-                
-                // Sync Game Clock
                 if (gameState.status === 'paused_reveal') {
                     gameState.pauseTime = seconds;
                 } else {
                     gameState.startTime = performance.now() - (seconds * 1000);
                 }
-                
-                // Sync Spotify
                 await player.seek(seconds * 1000);
             }
         });
@@ -727,36 +706,30 @@
         function handleScrubMove(e) {
             const seconds = getScrubTime(e);
             updateUIForTime(seconds);
-            highlightClosest(seconds); // Update highlighting while dragging
+            highlightClosest(seconds);
         }
 
         // --- UI HANDLERS ---
-
         function updateCutMarker() {
             const pct = (gameState.autoCutTime / 60) * 100;
             el.cutMarker.style.left = `${pct}%`;
         }
-        
         function updateRoundStatus(text) {
             el.roundStatus.innerText = text;
         }
-
         el.cutTimeSlider.addEventListener('input', (e) => {
             gameState.autoCutTime = parseInt(e.target.value);
             el.cutTimeDisplay.innerText = `${gameState.autoCutTime}s`;
             updateCutMarker();
         });
-
         el.autoCutToggle.addEventListener('change', (e) => {
             gameState.autoCutEnabled = e.target.checked;
             el.cutMarker.style.display = e.target.checked ? 'block' : 'none';
         });
-
         document.getElementById('startRoundBtn').onclick = restartRound;
         document.getElementById('nextRoundBtn').onclick = nextRound;
         el.revealBtn.onclick = toggleReveal;
 
-        // Player Management
         window.addPlayer = () => {
             const name = prompt("Player Name:");
             if (name) {
@@ -769,10 +742,7 @@
             players.forEach(p => { p.buzzed = null; p.wins = 0; });
             gameState.status = 'idle';
             cancelAnimationFrame(gameState.timerInterval);
-            
-            // UPDATE BUTTON TEXT
             el.startRoundBtn.innerText = "▶ Start Round";
-            
             renderPlayers();
         };
 
@@ -788,7 +758,6 @@
                         <span>${p.name}</span>
                         <span class="text-yellow-500">🏆 ${p.wins}</span>
                     </div>
-                    
                     <button onclick="buzz(${p.id})" ${isButtonDisabled ? 'disabled' : ''} 
                         class="w-full py-6 rounded-lg font-black text-xl transition transform active:scale-95 shadow-lg
                         ${isBuzzed ? 'bg-gray-700 text-gray-400 cursor-default' : 
@@ -796,7 +765,6 @@
                           'bg-red-600 hover:bg-red-500 text-white shadow-red-900/50'}">
                         ${isBuzzed ? p.buzzed.toFixed(2) + 's' : (gameState.hasCut ? 'SING!' : 'WAIT')}
                     </button>
-
                     ${canPickWinner ? `
                         <button onclick="selectWinner(${p.id})" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">
                             Select Winner
@@ -806,20 +774,13 @@
             `}).join('');
         }
 
-        // Search Logic
         document.getElementById('search-btn').onclick = async () => {
             const query = document.getElementById('search-input').value;
             const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
                 headers: { 'Authorization': `Bearer ${gameState.token}` }
             });
-            
-            if (res.status === 401) {
-                handleAuthError();
-                return;
-            }
-
+            if (res.status === 401) { handleAuthError(); return; }
             const data = await res.json();
-            
             document.getElementById('results').innerHTML = data.playlists.items
                 .filter(p => p)
                 .map(p => `
