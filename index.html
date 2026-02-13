@@ -838,11 +838,30 @@
         }
 
         // Host Actions
-        document.getElementById('nextRoundBtn').onclick = () => {
+        document.getElementById('nextRoundBtn').onclick = async () => {
              if(player) {
-                 player.seek(0).then(() => player.nextTrack());
+                 await player.setVolume(0.8);
+                 await player.nextTrack();
              }
-             window.hostResetRound();
+             
+             // Start Game Logic Immediately
+             const appId = window.__app_id || 'wwts-game'; 
+             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
+             
+             const snap = await getDoc(roomRef);
+             if(snap.exists()) {
+                 const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
+
+                 await updateDoc(roomRef, {
+                    status: 'playing',
+                    hasCut: false,
+                    startTime: Date.now(),
+                    pauseTime: 0,
+                    autoCutTime: cutTime,
+                    players: cleanPlayers
+                 });
+             }
         };
         
         // Search
