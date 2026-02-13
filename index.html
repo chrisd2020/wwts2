@@ -68,9 +68,10 @@
                             if (snap.exists() && snap.data().hostId === user.uid) {
                                 // Restore Host View
                                 roomId = savedRoomId;
-                                document.getElementById('lobby-loading').classList.add('hidden');
-                                document.getElementById('lobby-setup').classList.add('hidden');
-                                document.getElementById('lobby-main').classList.add('hidden');
+                                
+                                // FIX: Hide the Lobby Overlay!
+                                document.getElementById('lobby-screen').classList.add('hidden');
+                                
                                 document.getElementById('host-screen').classList.remove('hidden');
                                 document.getElementById('roomCodeDisplay').innerText = roomId;
                                 subscribeToRoom(roomId, 'host');
@@ -360,7 +361,6 @@
              if (code) {
                  await exchangeToken(code);
              } else {
-                 // Only check hash for old impl legacy cleanup, do nothing
                  if(window.location.hash.includes('access_token')) window.location.hash = '';
              }
 
@@ -378,7 +378,6 @@
                 if(input) input.value = storedId;
              }
              
-             // Canonical Redirect URI (always consistent)
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
              document.getElementById('redirectUriDisplay').innerText = redirect;
         });
@@ -415,10 +414,8 @@
             const verifier = localStorage.getItem("wwts_verifier");
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
             
-            // Use stored URI to match exactly what was sent in step 1
             let redirectUri = localStorage.getItem("wwts_redirect_uri");
             if (!redirectUri) {
-                // Fallback
                 redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
             }
 
@@ -442,18 +439,14 @@
                     localStorage.setItem('wwts_host_token', data.access_token);
                     token = data.access_token;
                     
-                    // Cleanup
                     localStorage.removeItem("wwts_verifier");
                     localStorage.removeItem("wwts_redirect_uri");
                     
-                    // CRITICAL FIX: Redirect to clean URL to prevent re-using code on reload
                     window.location.href = redirectUri;
                 } else {
-                    // Only alert if it's NOT the "invalid grant" error caused by double-load
                     if (data.error !== 'invalid_grant') {
                         alert("Token Error: " + (data.error_description || data.error));
                     }
-                    // Clean URL regardless to prevent getting stuck
                     window.history.replaceState({}, document.title, redirectUri);
                 }
             } catch(e) { console.error(e); }
@@ -464,7 +457,6 @@
             location.reload();
         };
 
-        // Initialize Player when token available
         window.onSpotifyWebPlaybackSDKReady = () => {
              if(token) initSpotifyPlayer();
         };
@@ -495,7 +487,6 @@
             player.connect();
         }
 
-        // Host Controls
         document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
         document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
         
