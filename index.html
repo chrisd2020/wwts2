@@ -249,19 +249,19 @@
         // --- HOST & PLAYER UI LOGIC ---
         let autoCutTimer = null;
         let isDragging = false;
-        let currentPlayers = []; // Local cache for highlighting
+        let currentPlayers = []; 
 
         function updateHostUI(data) {
+            // FIX 1: Don't update UI while dragging to prevent jumps
+            if (isDragging) return;
+
             // Update Players Grid (Right side)
             const grid = document.getElementById('playerGrid');
             const players = data.players || [];
-            currentPlayers = players; // Update cache for highlightClosest
+            currentPlayers = players; 
             
-            // Markers for Timeline - Rebuild only if count changes to avoid flicker, or just rebuild (simple)
+            // Markers for Timeline
             const markersContainer = document.getElementById('timeline-markers');
-            
-            // Only rebuild markers if we aren't dragging to avoid position jumps? 
-            // Actually markers are static based on buzzedAt, so we can rebuild.
             markersContainer.innerHTML = ''; 
 
             players.sort((a, b) => {
@@ -273,11 +273,10 @@
             grid.innerHTML = players.map((p, i) => {
                 const isBuzzed = p.buzzedAt !== null;
                 
-                // Add Marker if buzzed
                 if (isBuzzed && data.status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
-                    marker.id = `marker-${p.id}`; // Add ID for referencing
+                    marker.id = `marker-${p.id}`; 
                     marker.className = 'timeline-marker bg-white';
                     marker.style.left = `${pos}%`;
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name}</div>`;
@@ -305,11 +304,12 @@
             const cutMarker = document.getElementById('cut-marker');
             const timelineContainer = document.getElementById('timeline-container');
             
-            // Auto Cut Marker Position
-            if(data.autoCutTime) {
+            // FIX 2: Only update slider/marker if NOT dragging it
+            if(data.autoCutTime && document.activeElement !== document.getElementById('cutTimeSlider')) {
                 const cutPos = (data.autoCutTime / 60) * 100;
                 cutMarker.style.left = `${cutPos}%`;
                 document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
+                document.getElementById('cutTimeSlider').value = data.autoCutTime;
             }
 
             if (data.status === 'playing') {
@@ -319,7 +319,6 @@
                 startBtn.onclick = () => window.hostSetStatus('cut');
                 timelineContainer.classList.remove('interactive');
                 
-                // Start Timer Loop if not running
                 if(!autoCutTimer) startTimerLoop(data.startTime || Date.now(), data.autoCutTime, false);
 
             } else if (data.status === 'cut') {
@@ -332,22 +331,23 @@
                 revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition active:translate-y-1";
                 revealBtn.onclick = () => window.hostSetStatus('revealing');
                 
-                timelineContainer.classList.add('interactive'); // Enable scrubbing
+                timelineContainer.classList.add('interactive');
                 stopTimerLoop();
 
             } else if (data.status === 'revealing') {
                 roundStatus.innerText = "Revealing";
                 startBtn.innerText = "Reset Round";
-                startBtn.classList.replace('bg-red-600', 'bg-gray-700'); // Ensure resets
+                startBtn.classList.replace('bg-red-600', 'bg-gray-700'); 
                 startBtn.onclick = () => window.hostSetStatus('lobby');
                 
                 revealBtn.innerText = "⏸ Pause Reveal";
                 revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
-                revealBtn.onclick = () => window.hostSetStatus('cut'); // Go back to cut/pause state
+                revealBtn.onclick = () => window.hostSetStatus('cut'); 
                 
-                timelineContainer.classList.add('interactive'); // Enable scrubbing
+                timelineContainer.classList.add('interactive'); 
                 
-                if(!autoCutTimer) startTimerLoop(data.startTime || Date.now(), 60, true); // No auto-cut in reveal
+                // FIX 3: Start loop for reveal mode with no cut limit
+                if(!autoCutTimer) startTimerLoop(data.startTime || Date.now(), 60, true); 
 
             } else {
                 roundStatus.innerText = "Idle";
@@ -364,27 +364,23 @@
             }
         }
 
-        // Modified Timer Loop with Scrubbing Logic
         function startTimerLoop(startTime, autoCutLimit, isRevealMode) {
             if(autoCutTimer) cancelAnimationFrame(autoCutTimer);
             
             function loop() {
                 if (isDragging) {
                     autoCutTimer = requestAnimationFrame(loop);
-                    return; // Don't update time while dragging
+                    return; 
                 }
 
-                // If in reveal mode, time is just continuous
-                // In game mode, time is relative to start
                 const elapsed = (Date.now() - startTime) / 1000;
                 
                 document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
                 document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
                 
-                // Highlight closest player logic
                 highlightClosest(elapsed);
 
-                // Host Auto-Cut Logic (Only in game mode)
+                // FIX 4: Ensure auto-cut logic respects isRevealMode
                 if(!isRevealMode && elapsed >= autoCutLimit && document.getElementById('autoCutToggle').checked) {
                     window.hostSetStatus('cut');
                 } else {
@@ -417,26 +413,20 @@
                 }
             });
 
-            // Update UI
             currentPlayers.forEach(p => {
                 const card = document.getElementById(`player-card-${p.id}`);
                 const marker = document.getElementById(`marker-${p.id}`);
                 
-                if (p.id === closestId && minDiff < 5) { // Only highlight if reasonably close (<5s) to avoid confusion
-                    if(card) {
-                        card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                    }
+                if (p.id === closestId && minDiff < 5) { 
+                    if(card) card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
                     if(marker) marker.classList.add('marker-closest');
                 } else {
-                    if(card) {
-                        card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                    }
+                    if(card) card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
                     if(marker) marker.classList.remove('marker-closest');
                 }
             });
         }
 
-        // Drag/Scrub Logic
         const timeline = document.getElementById('timeline-container');
         
         function getScrubTime(e) {
@@ -462,24 +452,15 @@
                 isDragging = false;
                 const seconds = getScrubTime(e);
                 
-                // Perform Seek
                 if(player) {
                     await player.seek(seconds * 1000);
-                    // If we were Paused (cut), we might want to stay paused, or if Revealing, keep playing.
-                    // For now, let's assume dragging implies checking a specific spot, so we should sync visual time.
                     
-                    // We need to update the start time so the loop continues correctly from this new spot
-                    // New Start Time = Now - Seconds Dragged to
                     const newStartTime = Date.now() - (seconds * 1000);
                     
-                    // Update Firebase with new Start Time?
-                    // Ideally yes, but for now let's just update local loop if in Reveal Mode
+                    // FIX 5: Explicitly pass isRevealMode=true if we are in reveal state
                     if (document.getElementById('revealBtn').innerText.includes("Pause")) {
-                         // We are playing/revealing
                          startTimerLoop(newStartTime, 60, true);
                     } else {
-                         // We are paused/cut
-                         // Just update visual
                          document.getElementById('gameTimer').innerText = seconds.toFixed(2);
                          highlightClosest(seconds);
                     }
@@ -562,14 +543,7 @@
                  }
 
             } else if (status === 'revealing') {
-                 // Start playing from 0 or current pos? 
-                 // Usually reveal means "Show me what it is", so maybe start from 0 is better,
-                 // OR start from where the cut was. 
-                 // Let's assume start from 0 for "Reveal Music" usually implies "Let's hear the answer".
                  if(player) {
-                     // Check if we are paused at cut, if so, maybe just resume? 
-                     // But "Reveal" usually implies "Ok here is the song". 
-                     // Let's seek to 0 to be safe/clear.
                      await player.seek(0);
                      await player.setVolume(0.8);
                      await player.resume();
@@ -604,9 +578,6 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // Generate buzzer time based on host's "Cut" time ideally, but here we estimate.
-            // In a real app, Host should stamp the 'cutTime' in Firestore, and Client buzzes relative to that.
-            // For this version, we will just send a random sortable timestamp for the visual queue.
             const buzzTime = parseFloat(document.getElementById('gameTimer') ? document.getElementById('gameTimer').innerText : (Math.random() * 10).toFixed(2));
 
             const appId = window.__app_id || 'wwts-game'; 
@@ -620,7 +591,6 @@
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
-                        // Store roughly where the cut happened + reaction
                         players[myIndex].buzzedAt = docSnap.data().autoCutTime + (Math.random() * 2); 
                         t.update(roomRef, { players: players });
                     }
