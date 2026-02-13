@@ -11,7 +11,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE SETUP ---
         let app, auth, db, user;
@@ -122,8 +122,8 @@
             
             roomId = newRoomId;
             
-            // Create Room Doc
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            // Create Room Doc (Added 'rooms' subcollection segment)
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await setDoc(roomRef, {
                 hostId: user.uid,
                 status: 'lobby', // lobby, playing, cut, revealed
@@ -150,7 +150,8 @@
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${code}`);
+            // Fix Path: Added 'rooms'
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${code}`);
             const snap = await getDoc(roomRef);
 
             if(!snap.exists()) return alert("Room not found!");
@@ -179,7 +180,8 @@
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
             const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${id}`);
+            // Fix Path: Added 'rooms'
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
                 if(!doc.exists()) return;
@@ -240,7 +242,8 @@
         window.hostSetStatus = async (status) => {
             if(!roomId) return;
             const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            // Fix Path: Added 'rooms'
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { status: status });
             
             // If resetting, clear buzzes
@@ -303,10 +306,11 @@
             btn.innerText = "SENDING...";
             
             const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
+            // Fix Path: Added 'rooms'
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
             try {
-                await db.runTransaction(async (t) => {
+                await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
                     if (!docSnap.exists()) return;
                     
