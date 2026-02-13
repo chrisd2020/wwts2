@@ -74,7 +74,7 @@
         let localState = {
             players: [],
             status: 'idle',
-            hasCut: false, // Critical addition from original
+            hasCut: false, 
             startTime: 0,
             pauseTime: 0,
             autoCutTime: 10,
@@ -257,7 +257,7 @@
             });
         }
 
-        // --- HOST LOGIC (Matches Original Game Loop) ---
+        // --- HOST LOGIC ---
         
         function updateHostUI(data) {
             renderHostPlayers(data);
@@ -278,9 +278,7 @@
             // --- STATUS HANDLING ---
             
             if (data.status === 'playing') {
-                // Game Loop Active
                 if (!localState.timerInterval) startLoop();
-                
                 timelineContainer.classList.remove('interactive');
                 
                 if (data.hasCut) {
@@ -288,20 +286,17 @@
                     startBtn.innerText = "Force End Round"; 
                     startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                     startBtn.onclick = () => window.hostEndRound();
-                    
-                    revealBtn.disabled = true; // Wait for completion
+                    revealBtn.disabled = true; 
                     revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
                 } else {
                     roundStatus.innerText = "Playing";
                     startBtn.innerText = "Force Cut";
                     startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                     startBtn.onclick = () => window.hostTriggerCut();
-                    
                     revealBtn.disabled = true;
                 }
 
             } else if (data.status === 'complete') {
-                // All Guesses In
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
 
                 roundStatus.innerText = "Guesses In";
@@ -327,7 +322,7 @@
                 timelineContainer.classList.add('interactive');
 
             } else if (data.status === 'paused_reveal') {
-                if(!localState.timerInterval) startLoop(); // Loop to render frozen time
+                if(!localState.timerInterval) startLoop();
 
                 roundStatus.innerText = "Paused";
                 revealBtn.innerText = "▶ Resume Reveal";
@@ -337,7 +332,6 @@
                 timelineContainer.classList.add('interactive');
 
             } else {
-                // Lobby / Idle
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 
                 roundStatus.innerText = "Idle";
@@ -406,7 +400,6 @@
 
                 let elapsed = 0;
                 
-                // In Original: status stays 'playing' even after cut.
                 if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
                     elapsed = Math.max(0, elapsed);
@@ -414,16 +407,14 @@
                     elapsed = localState.pauseTime;
                 }
 
-                // Update UI
                 document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
                 document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
                 
-                // Highlight Logic
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(elapsed);
                 }
 
-                // Auto Cut Logic - Host Side Only
+                // Auto Cut Logic
                 if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && elapsed >= localState.autoCutTime) {
                     window.hostTriggerCut();
                 }
@@ -460,13 +451,10 @@
         };
 
         window.hostTriggerCut = async () => {
-            // ONLY updates 'hasCut', NOT status. Status stays 'playing' so loop continues!
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
             await updateDoc(roomRef, { hasCut: true });
-
-            // Host fades music locally
+            
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.05);
@@ -479,7 +467,6 @@
         };
 
         window.hostEndRound = async () => {
-             // Called manually or when all players buzz
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const elapsed = (Date.now() - localState.startTime) / 1000;
@@ -496,12 +483,23 @@
                 await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: elapsed });
                 if(player) player.pause();
             } else {
-                // Resume
-                const currentElapsed = localState.pauseTime;
-                await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - (currentElapsed * 1000) });
+                // Resume or Start Fresh
+                let startOffset = 0;
+                
+                if (localState.status === 'paused_reveal') {
+                    startOffset = localState.pauseTime * 1000;
+                } else {
+                    startOffset = 0;
+                }
+
+                await updateDoc(roomRef, { 
+                    status: 'revealing', 
+                    startTime: Date.now() - startOffset 
+                });
+                
                 if(player) {
                     await player.setVolume(0.8);
-                    await player.seek(currentElapsed * 1000);
+                    await player.seek(startOffset);
                     await player.resume();
                 }
             }
@@ -545,7 +543,6 @@
                 localState.isDragging = false;
                 const seconds = getScrubTime(e);
                 
-                // Update Firebase based on state
                 const appId = window.__app_id || 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
 
@@ -635,6 +632,13 @@
                     buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
                     buzzContainer.classList.remove('buzz-anim');
                 }
+            } else if (data.status === 'complete') {
+                // ROUND OVER MODE
+                statusEl.innerText = "Round Over";
+                statusEl.className = "text-xl text-yellow-400 font-bold";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "DONE";
+                buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-none opacity-80";
             } else {
                 statusEl.innerText = "Waiting for Host...";
                 statusEl.className = "text-xl text-gray-400";
@@ -649,8 +653,6 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // NOTE: We calculate buzzedAt based on Time Elapsed from Start.
-            // This ensures markers land after the cut line correctly.
             const elapsed = (Date.now() - localState.startTime) / 1000;
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
@@ -660,16 +662,26 @@
                     if (!docSnap.exists()) return;
                     const data = docSnap.data();
                     
-                    if (!data.hasCut) return; // Only buzz if cut
+                    if (!data.hasCut) return; 
 
                     const players = data.players;
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
                         players[myIndex].buzzedAt = elapsed; 
-                        t.update(roomRef, { players: players });
                         
-                        // Check if all players buzzed? Host usually handles end, but we can optimistically check.
+                        // Check if all buzzed
+                        const allBuzzed = players.every(p => p.buzzedAt !== null);
+                        
+                        if (allBuzzed) {
+                            t.update(roomRef, { 
+                                players: players,
+                                status: 'complete',
+                                pauseTime: elapsed
+                            });
+                        } else {
+                            t.update(roomRef, { players: players });
+                        }
                     }
                 });
             } catch(e) { console.error("Buzz failed", e); btn.innerText = "RETRY"; }
@@ -802,7 +814,12 @@
         }
 
         // Host Actions
-        document.getElementById('nextRoundBtn').onclick = () => player && player.nextTrack();
+        document.getElementById('nextRoundBtn').onclick = () => {
+             if(player) {
+                 player.seek(0).then(() => player.nextTrack());
+             }
+             window.hostResetRound();
+        };
         
         // Search
         document.getElementById('search-btn').onclick = async () => {
