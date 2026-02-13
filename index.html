@@ -104,11 +104,28 @@
             Win When They're Singing
         </h1>
         <p class="text-gray-400 mb-8">Web Edition</p>
-        <div class="glass p-8 rounded-2xl w-full max-w-md text-center">
-            <a href="/login" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
+        
+        <div class="glass p-8 rounded-2xl w-full max-w-md text-center space-y-5">
+            <div class="text-left space-y-1">
+                <label class="text-xs text-gray-400 uppercase font-bold ml-1">Spotify Client ID</label>
+                <input type="text" id="clientIdInput" placeholder="Paste Client ID from Dashboard" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm focus:border-green-500 outline-none transition font-mono text-green-300">
+                <p class="text-[10px] text-gray-500 leading-tight ml-1">
+                    Don't have one? <a href="https://developer.spotify.com/dashboard" target="_blank" class="underline hover:text-white">Create App</a> & add <span id="redirectUriDisplay" class="font-mono text-white/70 bg-white/10 px-1 rounded">...</span> to Redirect URIs.
+                </p>
+            </div>
+
+            <button onclick="startLogin()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
                 Log in with Spotify
-            </a>
-            <p class="text-xs text-gray-500 mt-4">Required for playback control</p>
+            </button>
+            
+            <div class="relative py-2">
+                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div>
+                <div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-xs text-gray-500">OR</span></div>
+            </div>
+
+            <button onclick="enterManualToken()" class="text-xs text-gray-400 hover:text-white underline">
+                Paste Access Token Manually
+            </button>
         </div>
     </div>
 
@@ -245,6 +262,8 @@
             isDragging: false
         };
 
+        const CLIENT_ID_KEY = 'wwts_client_id';
+
         const el = {
             gameView: document.getElementById('game-view'),
             loginView: document.getElementById('login-view'),
@@ -289,8 +308,40 @@
                 // Init UI
                 updateCutMarker();
                 renderPlayers();
+            } else {
+                initLoginView();
             }
         }
+
+        function initLoginView() {
+            const storedId = localStorage.getItem(CLIENT_ID_KEY);
+            if(storedId) document.getElementById('clientIdInput').value = storedId;
+            
+            // Show the redirect URI so they can copy it
+            const redirect = window.location.href.split('#')[0]; 
+            document.getElementById('redirectUriDisplay').innerText = redirect;
+        }
+
+        window.startLogin = () => {
+            const clientId = document.getElementById('clientIdInput').value.trim();
+            if(!clientId) return alert("Please enter a Client ID from the Spotify Developer Dashboard.");
+            
+            localStorage.setItem(CLIENT_ID_KEY, clientId);
+            
+            const redirectUri = window.location.href.split('#')[0];
+            const scopes = 'streaming user-read-email user-read-private user-modify-playback-state';
+            const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}`;
+            
+            window.location.href = authUrl;
+        };
+
+        window.enterManualToken = () => {
+            const token = prompt("Paste your temporary access token:");
+            if(token) {
+                 window.location.hash = `access_token=${token}`;
+                 window.location.reload();
+            }
+        };
         
         window.logout = () => {
             localStorage.removeItem('wwts_local_token');
@@ -304,6 +355,7 @@
             // Return to login screen
             el.gameView.classList.add('hidden');
             el.loginView.classList.remove('hidden');
+            initLoginView();
             
             alert("Spotify session expired. Please log in again.");
         }
