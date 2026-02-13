@@ -7,6 +7,39 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://sdk.scdn.co/spotify-player.js"></script>
     
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
+        
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at center, #1e1233 0%, #0a0514 100%);
+            color: white;
+            min-height: 100vh;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+        }
+
+        .spotify-green { color: #1DB954; }
+        .bg-spotify { background-color: #1DB954; }
+        
+        /* Animation from Original UI */
+        .buzzer-active { animation: pulse 1.5s infinite; }
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+        .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
+    </style>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -19,7 +52,6 @@
         let unsubscribeRoom = null;
         let isFirebaseReady = false;
 
-        // 1. Try to get config from Environment (Canvas) OR LocalStorage (GitHub Pages)
         function getFirebaseConfig() {
             try {
                 if (window.__firebase_config) return JSON.parse(window.__firebase_config);
@@ -55,28 +87,20 @@
                         console.log("Firebase Auth: ", user.uid);
                         isFirebaseReady = true;
                         
-                        // Check if we need to restore a session (Host returned from Spotify)
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         
                         if (savedRoomId) {
-                            console.log("Restoring session for room:", savedRoomId);
-                            // Verify room exists
                             const appId = window.__app_id || 'wwts-game';
                             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
                             const snap = await getDoc(roomRef);
                             
                             if (snap.exists() && snap.data().hostId === user.uid) {
-                                // Restore Host View
                                 roomId = savedRoomId;
-                                
-                                // FIX: Hide the Lobby Overlay!
                                 document.getElementById('lobby-screen').classList.add('hidden');
-                                
                                 document.getElementById('host-screen').classList.remove('hidden');
                                 document.getElementById('roomCodeDisplay').innerText = roomId;
                                 subscribeToRoom(roomId, 'host');
                             } else {
-                                // Invalid session, clear it
                                 localStorage.removeItem('wwts_active_room_id');
                                 showMainLobby();
                             }
@@ -138,9 +162,7 @@
                     players: []
                 });
 
-                // Save room ID for persistence during Spotify redirect
                 localStorage.setItem('wwts_active_room_id', roomId);
-
                 document.getElementById('lobby-screen').classList.add('hidden');
                 document.getElementById('host-screen').classList.remove('hidden');
                 document.getElementById('roomCodeDisplay').innerText = roomId;
@@ -222,34 +244,44 @@
                 return 0;
             });
 
+            // Original UI Player Cards
             grid.innerHTML = players.map((p, i) => {
                 const isBuzzed = p.buzzedAt !== null;
                 return `
-                <div class="glass p-3 flex flex-col items-center justify-between gap-2 transition-all duration-300 ${isBuzzed ? 'border-green-500 bg-green-900/20' : ''}">
+                <div class="glass p-4 flex flex-col items-center justify-between gap-2 transition-all duration-300 ${isBuzzed ? 'border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.2)] bg-red-900/10' : ''}">
                     <div class="flex justify-between w-full text-xs text-gray-400">
-                        <span>${p.name}</span>
+                        <span class="font-bold text-base text-white">${p.name}</span>
                         ${isBuzzed ? `<span class="text-yellow-400 font-bold">#${i+1}</span>` : ''}
                     </div>
-                    <div class="w-full h-16 rounded flex items-center justify-center font-bold text-xl ${isBuzzed ? 'bg-green-500 text-black' : 'bg-white/5 text-gray-600'}">
-                        ${isBuzzed ? 'BUZZED!' : '...'}
+                    
+                    <div class="w-24 h-24 rounded-full bg-gradient-to-br from-red-500 to-red-700 shadow-lg border-b-4 border-red-900 flex items-center justify-center transition-all ${isBuzzed ? 'scale-110 shadow-[0_0_20px_red]' : 'grayscale opacity-20'}">
+                        <span class="font-black text-xl text-white drop-shadow-md">${isBuzzed ? 'SING!' : '...'}</span>
                     </div>
-                    ${isBuzzed ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 px-2 py-1 rounded w-full">Winner?</button>` : ''}
+
+                    <div class="h-6 flex items-center text-mono text-gray-400 text-sm">
+                        ${isBuzzed ? 'BUZZED' : 'Waiting...'}
+                    </div>
+
+                    ${isBuzzed ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 px-3 py-1 rounded-full w-full uppercase font-bold text-black mt-1">Winner?</button>` : ''}
                 </div>
             `}).join('');
 
             const cutBtn = document.getElementById('cutMusicBtn');
+            const cutBtnText = document.getElementById('cutBtnText');
+            
+            // Sync Game Status
             if (data.status === 'playing') {
-                cutBtn.innerText = "CUT MUSIC!";
+                cutBtnText.innerText = "CUT MUSIC!";
                 cutBtn.className = "flex-1 bg-red-600 hover:bg-red-500 text-white font-black text-xl py-4 rounded-xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-2 border-b-4 border-red-800 active:border-b-0 active:translate-y-1";
                 cutBtn.disabled = false;
             } else if (data.status === 'cut') {
-                cutBtn.innerText = "RESET ROUND";
-                cutBtn.className = "flex-1 bg-gray-600 hover:bg-gray-500 text-white font-bold text-xl py-4 rounded-xl";
+                cutBtnText.innerText = "RESET ROUND";
+                cutBtn.className = "flex-1 bg-gray-600 hover:bg-gray-500 text-white font-bold text-xl py-4 rounded-xl flex items-center justify-center";
                 cutBtn.disabled = false;
             } else if (data.status === 'lobby') {
-                cutBtn.innerText = "START ROUND (Play Music First)";
+                cutBtnText.innerText = "START ROUND (Play Music First)";
                 cutBtn.disabled = true;
-                cutBtn.className = "flex-1 bg-gray-800 text-gray-500 font-bold text-xl py-4 rounded-xl cursor-not-allowed";
+                cutBtn.className = "flex-1 bg-gray-800 text-gray-500 font-bold text-xl py-4 rounded-xl cursor-not-allowed flex items-center justify-center";
             }
         }
 
@@ -332,10 +364,9 @@
             }
         };
 
-        // --- SPOTIFY PKCE AUTH & LOGIC ---
+        // --- SPOTIFY LOGIC ---
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
-        // Fix: Get token immediately to prevent race conditions
         let token = localStorage.getItem('wwts_host_token');
         let player = null;
 
@@ -353,24 +384,14 @@
             return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         }
 
-        // Init Spotify Check
         window.addEventListener('load', async () => {
-             // 1. Check for PKCE Code
              const params = new URLSearchParams(window.location.search);
              const code = params.get('code');
+             if (code) { await exchangeToken(code); } 
+             else if(window.location.hash.includes('access_token')) window.location.hash = '';
+
+             if(token) updateAuthUI();
              
-             if (code) {
-                 await exchangeToken(code);
-             } else {
-                 if(window.location.hash.includes('access_token')) window.location.hash = '';
-             }
-
-             // 2. Load stored token & UI
-             if(token) {
-                 updateAuthUI();
-             }
-
-             // 3. Fill Client ID / Redirect
              const storedId = localStorage.getItem(CLIENT_ID_KEY);
              if(storedId) {
                 const input = document.getElementById('clientIdInput');
@@ -378,20 +399,21 @@
              }
              
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
-             document.getElementById('redirectUriDisplay').innerText = redirect;
+             const rUriDisplay = document.getElementById('redirectUriDisplay');
+             if(rUriDisplay) rUriDisplay.innerText = redirect;
         });
 
         function updateAuthUI() {
             const panel = document.getElementById('auth-panel');
             if(panel) {
                  panel.innerHTML = `
-                    <div class="text-xs text-green-400 font-bold p-2 border border-green-500 rounded text-center mb-2">
+                    <div class="text-xs text-green-400 font-bold p-3 border border-green-500 rounded-lg text-center mb-2 bg-green-900/10">
                         Spotify Connected
                     </div>
-                    <div id="player-status-indicator" class="text-[10px] text-yellow-500 text-center mb-2 animate-pulse">
-                        Player Status: Connecting...
+                    <div id="player-status-indicator" class="text-[10px] text-yellow-500 text-center mb-2 animate-pulse uppercase tracking-wide">
+                        Connecting to Player...
                     </div>
-                    <button onclick="logoutSpotify()" class="text-[10px] text-gray-500 underline w-full">Log Out</button>
+                    <button onclick="logoutSpotify()" class="text-[10px] text-gray-500 hover:text-white underline w-full">Log Out</button>
                  `;
             }
         }
@@ -402,16 +424,14 @@
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             
             const verifier = generateRandomString(128);
-            await generateCodeChallenge(verifier); // Warmup
+            await generateCodeChallenge(verifier);
             const challenge = await generateCodeChallenge(verifier);
             localStorage.setItem("wwts_verifier", verifier);
             
-            // Generate and STORE the exact redirect URI we are using
             const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
             localStorage.setItem("wwts_redirect_uri", redirectUri);
 
             const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
-            
             const args = new URLSearchParams({
                 response_type: 'code',
                 client_id: clientId,
@@ -420,18 +440,13 @@
                 code_challenge_method: 'S256',
                 code_challenge: challenge
             });
-
             window.location.href = 'https://accounts.spotify.com/authorize?' + args;
         };
 
         async function exchangeToken(code) {
             const verifier = localStorage.getItem("wwts_verifier");
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
-            
-            let redirectUri = localStorage.getItem("wwts_redirect_uri");
-            if (!redirectUri) {
-                redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
-            }
+            let redirectUri = localStorage.getItem("wwts_redirect_uri") || (window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/'));
 
             const params = new URLSearchParams({
                 client_id: clientId,
@@ -452,15 +467,11 @@
                 if (data.access_token) {
                     localStorage.setItem('wwts_host_token', data.access_token);
                     token = data.access_token;
-                    
                     localStorage.removeItem("wwts_verifier");
                     localStorage.removeItem("wwts_redirect_uri");
-                    
                     window.location.href = redirectUri;
                 } else {
-                    if (data.error !== 'invalid_grant') {
-                        alert("Token Error: " + (data.error_description || data.error));
-                    }
+                    if (data.error !== 'invalid_grant') alert("Token Error: " + (data.error_description || data.error));
                     window.history.replaceState({}, document.title, redirectUri);
                 }
             } catch(e) { console.error(e); }
@@ -471,7 +482,6 @@
             location.reload();
         };
 
-        // Fix: Use a flag to prevent double-init
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => {
              if(token && !playerInit) initSpotifyPlayer();
@@ -481,7 +491,6 @@
             if(playerInit) return;
             playerInit = true;
             
-            console.log("Initializing Player...");
             player = new Spotify.Player({
                 name: "WWTS Host",
                 getOAuthToken: cb => { cb(token); },
@@ -491,16 +500,11 @@
             player.addListener('ready', ({ device_id }) => {
                 deviceId = device_id;
                 console.log('Ready with Device ID', device_id);
-                
                 const indicator = document.getElementById('player-status-indicator');
                 if(indicator) {
-                    indicator.innerText = "Player Status: Ready";
-                    indicator.className = "text-[10px] text-green-400 text-center mb-2 font-bold";
+                    indicator.innerText = "PLAYER READY";
+                    indicator.className = "text-[10px] text-green-400 text-center mb-2 font-bold tracking-widest";
                 }
-            });
-
-            player.addListener('not_ready', ({ device_id }) => {
-                console.log('Device ID has gone offline', device_id);
             });
 
             player.addListener('player_state_changed', state => {
@@ -513,30 +517,29 @@
                 const playIcon = document.getElementById('playIcon');
                 if (playIcon) {
                     if (state.paused) {
-                         playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>'; // Play
+                         playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>'; 
                     } else {
-                         playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'; // Pause
+                         playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'; 
                     }
                 }
 
-                if (!state.paused && document.getElementById('cutMusicBtn').innerText.includes("START")) {
+                if (!state.paused && document.getElementById('cutBtnText').innerText.includes("START")) {
                      window.hostSetStatus('playing');
                 }
             });
-
             player.connect();
         }
 
         document.getElementById('playPauseBtn').onclick = () => player && player.togglePlay();
         document.getElementById('nextTrackBtn').onclick = () => player && player.nextTrack();
-        document.getElementById('prevTrackBtn').onclick = () => player && player.previousTrack(); // Restored
+        document.getElementById('prevTrackBtn').onclick = () => player && player.previousTrack();
         
         document.getElementById('cutMusicBtn').onclick = async () => {
-             const btn = document.getElementById('cutMusicBtn');
-             if (btn.innerText.includes("CUT")) {
+             const btnText = document.getElementById('cutBtnText');
+             if (btnText.innerText.includes("CUT")) {
                  await player.pause();
                  window.hostSetStatus('cut');
-             } else if (btn.innerText.includes("RESET")) {
+             } else if (btnText.innerText.includes("RESET")) {
                  window.hostSetStatus('lobby');
              } else {
                  alert("Play music on Spotify first!");
@@ -546,12 +549,14 @@
         document.getElementById('searchBtn').onclick = async () => {
             const query = document.getElementById('searchQuery').value;
             if(!token) return alert("Log in first");
+            
+            document.getElementById('searchResults').innerHTML = '<div class="text-center p-4"><div class="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full mx-auto"></div></div>';
+
             const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
             
-            // Fix for TypeError when data.playlists.items contains nulls
             if (!data.playlists || !data.playlists.items) {
                  document.getElementById('searchResults').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>';
                  return;
@@ -562,17 +567,18 @@
                 .map(p => {
                     const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
                     return `
-                    <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-2 p-2 rounded hover:bg-white/10 cursor-pointer">
-                        <img src="${imgUrl}" class="w-8 h-8 rounded bg-gray-800 object-cover">
-                        <div class="text-xs truncate text-gray-300">${p.name}</div>
+                    <div onclick="playPlaylist('${p.uri}')" class="flex items-center gap-3 p-2 rounded-lg hover:bg-white/10 cursor-pointer transition group">
+                        <img src="${imgUrl}" class="w-10 h-10 rounded shadow-sm object-cover">
+                        <div class="overflow-hidden">
+                            <div class="text-xs font-bold text-white truncate">${p.name}</div>
+                            <div class="text-[10px] text-gray-400 truncate">${p.tracks?.total || 0} tracks</div>
+                        </div>
                     </div>
                 `}).join('');
         };
 
         window.playPlaylist = async (uri) => {
-             if(!deviceId) return alert("Player not ready. Wait for status 'Ready'.");
-             
-             // Fix: Explicitly use device_id in API call
+             if(!deviceId) return alert("Player not ready. Wait for status 'READY'.");
              try {
                  await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                     method: 'PUT',
@@ -586,31 +592,6 @@
         };
 
     </script>
-
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
-        
-        body {
-            font-family: 'Outfit', sans-serif;
-            background: radial-gradient(circle at center, #1e1233 0%, #0a0514 100%);
-            color: white;
-            min-height: 100vh;
-        }
-
-        .glass {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 24px;
-        }
-
-        .spotify-green { color: #1DB954; }
-        .bg-spotify { background-color: #1DB954; }
-        
-        /* Utility */
-        .custom-scroll::-webkit-scrollbar { width: 4px; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-    </style>
 </head>
 <body class="p-4 md:p-6 overflow-hidden h-screen flex flex-col">
 
@@ -711,80 +692,109 @@
     </div>
 
     <!-- HOST SCREEN (Main Game) -->
-    <div id="host-screen" class="hidden flex-1 grid gap-4 grid-cols-1 md:grid-cols-[300px_1fr] h-full max-w-7xl mx-auto w-full">
+    <div id="host-screen" class="hidden w-full max-w-6xl mx-auto p-4 md:p-8 h-full flex flex-col">
         
-        <!-- Left Sidebar: Controls -->
-        <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <!-- Room Info -->
-            <div class="glass p-4 rounded-xl bg-gradient-to-br from-yellow-900/20 to-black/20 border-yellow-500/20">
-                <div class="text-xs uppercase font-bold text-yellow-500 mb-1">Room Code</div>
-                <div id="roomCodeDisplay" class="text-5xl font-black text-white tracking-widest font-mono">----</div>
-                <div class="text-[10px] text-gray-400 mt-2">Share this code with players</div>
+        <!-- Header -->
+        <header class="text-center mb-6 relative">
+             <div class="absolute top-0 right-0 glass px-4 py-2 flex flex-col items-end border border-white/10">
+                <span class="text-[10px] text-gray-400 uppercase tracking-widest">Room Code</span>
+                <span id="roomCodeDisplay" class="text-3xl font-black text-yellow-400 font-mono leading-none">----</span>
             </div>
 
-            <!-- Spotify Auth -->
-            <div class="glass p-4 rounded-xl flex-1 flex flex-col">
-                <h2 class="text-xs font-bold uppercase text-gray-400 mb-2">Music Control</h2>
-                
-                <!-- Client ID Input (Needed for Host) -->
-                <div id="auth-panel">
-                    <input type="text" id="clientIdInput" placeholder="Client ID" class="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs mb-2">
-                    <button onclick="startLogin()" class="w-full bg-spotify text-black font-bold py-2 rounded text-xs mb-2">Log in Spotify</button>
-                </div>
-                <div class="text-[10px] text-gray-500 break-all p-2 border border-white/10 rounded mt-2">
-                    <span class="text-gray-400 font-bold block mb-1">Required Redirect URI:</span>
-                    <span id="redirectUriDisplay" class="select-all">...</span>
-                </div>
-
-                <!-- Search -->
-                <div class="mt-4 flex flex-col gap-2 flex-1 min-h-0">
-                    <input id="searchQuery" type="text" placeholder="Search Playlists..." class="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm">
-                    <button id="searchBtn" class="bg-white/10 hover:bg-white/20 p-2 rounded text-xs uppercase font-bold">Search</button>
-                    <div id="searchResults" class="flex-1 overflow-y-auto custom-scroll space-y-1 mt-2"></div>
-                </div>
+            <h1 class="text-4xl md:text-6xl font-black italic tracking-tighter uppercase text-yellow-400">
+                Win When They're Singing
+            </h1>
+            <div class="flex items-center justify-center gap-2 mt-2">
+                <span class="text-gray-400 text-sm">Powered by</span>
+                <span class="spotify-green font-bold text-sm flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.503 17.31c-.218.358-.684.47-1.042.252-2.85-1.742-6.438-2.135-10.664-1.168-.41.093-.82-.163-.914-.572-.093-.41.163-.82.572-.914 4.63-1.06 8.586-.615 11.796 1.347.358.218.47.684.252 1.042zm1.468-3.263c-.274.446-.854.588-1.3.314-3.262-2.003-8.235-2.585-12.093-1.413-.5.15-1.025-.13-1.176-.63-.15-.5.13-1.025.63-1.176 4.414-1.34 9.907-.684 13.626 1.6 0 .445-.143.854-.588 1.314-.313zm.126-3.414C15.24 8.244 8.845 8.03 5.127 9.16c-.57.173-1.174-.156-1.347-.725-.173-.57.156-1.174.725-1.347 4.26-1.294 11.32-1.043 15.78 1.605.513.305.682.97.377 1.483-.305.513-.97.682-1.483.377z"/></svg>
+                    Spotify Premium
+                </span>
             </div>
-        </div>
+        </header>
 
-        <!-- Right Main: Game Board -->
-        <div class="flex flex-col gap-4 h-full overflow-hidden">
+        <main class="grid gap-6 md:grid-cols-[350px_1fr] flex-1 overflow-hidden min-h-0">
             
-            <!-- Now Playing (Restored UI) -->
-            <section class="glass p-6 border-t-4 border-yellow-500 relative overflow-hidden">
-                <div class="relative z-10">
-                    <div class="flex justify-between items-start mb-6">
-                        <div class="flex-1 mr-4 overflow-hidden">
-                            <h2 class="text-yellow-500 font-bold uppercase tracking-widest text-sm mb-2">Now Playing</h2>
-                            <div id="trackInfo" class="text-2xl font-black leading-tight mb-1 truncate">Waiting for Music...</div>
-                            <div id="artistInfo" class="text-lg text-gray-400 truncate">---</div>
+            <!-- Left Column: Controls -->
+            <div class="space-y-6 flex flex-col overflow-hidden">
+                <!-- Auth Section -->
+                <section class="glass p-6 shrink-0">
+                    <h2 class="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4">1. Host Connection</h2>
+                    
+                    <div id="auth-panel">
+                        <!-- Default State -->
+                        <div class="mb-2">
+                             <input type="text" id="clientIdInput" placeholder="Paste Client ID..." class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 text-sm focus:border-green-500 focus:outline-none transition">
+                        </div>
+                        <button onclick="startLogin()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold px-4 py-2 rounded-full transition text-sm shadow-lg mb-3">
+                            Log in with Spotify
+                        </button>
+                        
+                        <div class="bg-black/20 p-2 rounded border border-white/5">
+                            <p class="text-[10px] text-gray-500 uppercase font-bold mb-1">Redirect URI</p>
+                            <div class="flex gap-2">
+                                <span id="redirectUriDisplay" class="text-[10px] text-gray-400 font-mono select-all truncate">...</span>
+                            </div>
                         </div>
                     </div>
+                </section>
 
-                    <div class="flex flex-wrap items-center gap-4">
-                        <!-- Playback Controls -->
-                        <div class="flex items-center bg-black/30 rounded-xl p-1">
-                            <button id="prevTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
-                            <button id="playPauseBtn" class="p-4 bg-white text-black rounded-lg hover:scale-105 transition shadow-lg"><svg id="playIcon" class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
-                            <button id="nextTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
-                        </div>
-
-                        <!-- THE BIG BUTTON -->
-                        <button id="cutMusicBtn" class="flex-1 bg-gray-700 text-gray-500 font-bold text-xl py-4 rounded-xl transition-all flex items-center justify-center gap-2 border-b-4 border-gray-800" disabled>
-                            <span>START ROUND (Play Music First)</span>
+                <!-- Search Section -->
+                <section class="glass p-6 flex flex-col flex-1 min-h-0">
+                    <h2 class="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4">2. Find Playlist</h2>
+                    <div class="flex gap-2 mb-4">
+                        <input type="text" id="searchQuery" placeholder="Search Playlists..." class="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:border-green-500 focus:outline-none">
+                        <button id="searchBtn" class="bg-white/10 hover:bg-white/20 p-2 rounded-lg transition">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                         </button>
                     </div>
-                </div>
-            </section>
-
-            <!-- Players Grid -->
-            <div class="flex-1 glass p-4 overflow-y-auto custom-scroll">
-                <h3 class="text-xs font-bold uppercase text-gray-400 mb-3">Live Players</h3>
-                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                    <!-- Dynamic Players -->
-                    <div class="text-gray-500 text-sm italic col-span-full text-center py-10">Waiting for players to join...</div>
-                </div>
+                    
+                    <div id="searchResults" class="flex-1 overflow-y-auto custom-scroll space-y-2 pr-1">
+                        <div class="text-center text-gray-500 text-sm mt-10 italic">Log in to search...</div>
+                    </div>
+                </section>
             </div>
 
-        </div>
+            <!-- Right Column: Game Area -->
+            <div class="space-y-6 flex flex-col overflow-hidden">
+                
+                <!-- Host Console (Now Playing) -->
+                <section class="glass p-6 border-t-4 border-yellow-500 relative shrink-0">
+                    <div class="relative z-10">
+                        <div class="flex justify-between items-start mb-6">
+                            <div class="flex-1 mr-4 overflow-hidden">
+                                <h2 class="text-yellow-500 font-bold uppercase tracking-widest text-sm mb-2">Now Playing</h2>
+                                <div id="trackInfo" class="text-2xl font-black leading-tight mb-1 truncate">Select a Playlist</div>
+                                <div id="artistInfo" class="text-lg text-gray-400 truncate">---</div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-center gap-4">
+                            <!-- Playback Controls -->
+                            <div class="flex items-center bg-black/30 rounded-xl p-1">
+                                <button id="prevTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+                                <button id="playPauseBtn" class="p-4 bg-white text-black rounded-lg hover:scale-105 transition shadow-lg"><svg id="playIcon" class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                                <button id="nextTrackBtn" class="p-3 hover:text-white text-gray-400 transition"><svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+                            </div>
+
+                            <!-- THE BIG BUTTON -->
+                            <button id="cutMusicBtn" class="flex-1 bg-gray-800 text-gray-500 font-bold text-xl py-4 rounded-xl shadow-xl transition-all flex items-center justify-center gap-2 cursor-not-allowed" disabled>
+                                <span id="cutBtnText">START ROUND (Play Music First)</span>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Player Grid -->
+                <section class="flex-1 overflow-y-auto custom-scroll">
+                    <div id="playerGrid" class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-4">
+                        <!-- Players injected here -->
+                         <div class="col-span-full text-center text-gray-500 py-10 italic">Waiting for players to join with code...</div>
+                    </div>
+                </section>
+
+            </div>
+        </main>
     </div>
 
     <!-- Hidden Toast -->
