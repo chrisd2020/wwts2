@@ -14,30 +14,102 @@
         import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE SETUP ---
-        const firebaseConfig = JSON.parse(window.__firebase_config || '{}'); // injected by environment
-        const appId = window.__app_id || 'default-app';
-        
         let app, auth, db, user;
         let roomId = null;
         let unsubscribeRoom = null;
+        let isFirebaseReady = false;
 
-        // Initialize
-        try {
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
+        // 1. Try to get config from Environment (Canvas) OR LocalStorage (GitHub Pages)
+        function getFirebaseConfig() {
+            try {
+                // First check environment (Canvas)
+                if (window.__firebase_config) {
+                    return JSON.parse(window.__firebase_config);
+                }
+                // Then check LocalStorage (Self-hosted)
+                const stored = localStorage.getItem('wwts_firebase_config');
+                if (stored) return JSON.parse(stored);
+            } catch (e) {
+                console.error("Config Parsing Error:", e);
+            }
+            return null;
+        }
+
+        async function initFirebase() {
+            const config = getFirebaseConfig();
             
-            signInAnonymously(auth).catch(console.error);
-            onAuthStateChanged(auth, (u) => {
-                user = u;
-                if(user) console.log("Firebase Auth: ", user.uid);
-            });
-        } catch(e) { console.error("Firebase Init Error", e); }
+            if (!config || !config.apiKey) {
+                console.warn("No valid Firebase Config found. Showing setup screen.");
+                document.getElementById('lobby-loading').classList.add('hidden');
+                document.getElementById('lobby-setup').classList.remove('hidden');
+                return;
+            }
+
+            try {
+                app = initializeApp(config);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                
+                await signInAnonymously(auth);
+                
+                onAuthStateChanged(auth, (u) => {
+                    user = u;
+                    if(user) {
+                        console.log("Firebase Auth: ", user.uid);
+                        isFirebaseReady = true;
+                        // Show Main Lobby
+                        document.getElementById('lobby-loading').classList.add('hidden');
+                        document.getElementById('lobby-setup').classList.add('hidden');
+                        document.getElementById('lobby-main').classList.remove('hidden');
+                    }
+                });
+            } catch(e) { 
+                console.error("Firebase Init Error", e); 
+                alert("Firebase Error: " + e.message + "\n\nCheck your configuration.");
+                // Show setup to allow fixing
+                document.getElementById('lobby-loading').classList.add('hidden');
+                document.getElementById('lobby-setup').classList.remove('hidden');
+            }
+        }
+
+        // Initialize on Load
+        initFirebase();
 
         // --- GLOBAL EXPORTS FOR HTML ---
+        
+        // Configuration Helper
+        window.saveFirebaseConfig = () => {
+            const input = document.getElementById('firebaseConfigInput').value.trim();
+            if(!input) return alert("Please paste the config JSON.");
+            
+            try {
+                // Try to parse to ensure it's valid JSON
+                // Users might paste "const firebaseConfig = { ... };" so we try to clean it
+                let jsonStr = input;
+                if (input.includes('=')) {
+                    jsonStr = input.substring(input.indexOf('=') + 1);
+                }
+                if (jsonStr.endsWith(';')) {
+                    jsonStr = jsonStr.slice(0, -1);
+                }
+                
+                const config = JSON.parse(jsonStr);
+                if (!config.apiKey) throw new Error("Missing apiKey in config");
+
+                localStorage.setItem('wwts_firebase_config', JSON.stringify(config));
+                window.location.reload();
+            } catch(e) {
+                alert("Invalid JSON: " + e.message + "\n\nPlease paste just the object: { ... }");
+            }
+        };
+
         window.createRoom = async () => {
-            if(!user) return alert("Connecting to server...");
+            if(!isFirebaseReady) return alert("Connecting to server...");
             const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            
+            // Use a default App ID if not provided by environment
+            const appId = window.__app_id || 'wwts-game'; 
+            
             roomId = newRoomId;
             
             // Create Room Doc
@@ -60,9 +132,10 @@
         };
 
         window.joinRoom = async () => {
-            if(!user) return alert("Connecting to server...");
+            if(!isFirebaseReady) return alert("Connecting to server...");
             const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
             const name = document.getElementById('playerNameInput').value.trim();
+            const appId = window.__app_id || 'wwts-game'; 
             
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
@@ -79,11 +152,6 @@
                 buzzedAt: null,
                 score: 0
             };
-
-            // We store players in a subcollection or array. For simplicity/speed in Firestore limits:
-            // We'll update the main doc's player array for roster, but use a subcollection for buzzes if needed.
-            // Actually, let's just update the player list in the main doc for this simple game logic.
-            // Ideally we'd use a subcollection, but arrayUnion is easier for "joining".
             
             await updateDoc(roomRef, {
                 players: arrayUnion(playerData)
@@ -100,6 +168,7 @@
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
+            const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
@@ -160,6 +229,7 @@
         // --- HOST ACTIONS ---
         window.hostSetStatus = async (status) => {
             if(!roomId) return;
+            const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { status: status });
             
@@ -222,11 +292,9 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
+            const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `wwts_room_${roomId}`);
             
-            // We need to update ONLY our player entry in the array. 
-            // In Firestore, modifying one item in an array is hard without reading.
-            // Transaction is best here.
             try {
                 await db.runTransaction(async (t) => {
                     const docSnap = await t.get(roomRef);
@@ -236,7 +304,7 @@
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
-                        players[myIndex].buzzedAt = Date.now(); // Server timestamp would be better but Date.now is okay for simple logic
+                        players[myIndex].buzzedAt = Date.now();
                         t.update(roomRef, { players: players });
                     }
                 });
@@ -282,28 +350,53 @@
         </h1>
         
         <div class="glass p-8 w-full max-w-md space-y-6">
-            <!-- Join Section -->
-            <div class="space-y-3">
-                <label class="text-xs uppercase font-bold text-gray-400">Join Existing Game</label>
-                <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
-                <div class="flex gap-2">
-                    <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
-                    <button onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">
-                        Join Game
-                    </button>
+            
+            <!-- STATE: Loading -->
+            <div id="lobby-loading" class="text-center py-8">
+                <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
+                <p class="text-gray-400">Connecting to Multiplayer...</p>
+            </div>
+
+            <!-- STATE: Setup (Missing Config) -->
+            <div id="lobby-setup" class="hidden text-center">
+                <h3 class="text-xl font-bold text-white mb-2">Setup Multiplayer</h3>
+                <p class="text-xs text-gray-400 mb-4 text-left">
+                    To play online, this app needs a Firebase database. <br><br>
+                    1. Go to <a href="https://console.firebase.google.com" target="_blank" class="text-yellow-400 underline">Firebase Console</a><br>
+                    2. Create project > Settings > General > SDK Setup<br>
+                    3. Copy the <code>firebaseConfig</code> object<br>
+                    4. Paste it below:
+                </p>
+                <textarea id="firebaseConfigInput" rows="6" class="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[10px] font-mono text-green-400 focus:border-yellow-400 outline-none mb-4" placeholder='{ "apiKey": "...", "authDomain": "...", ... }'></textarea>
+                <button onclick="saveFirebaseConfig()" class="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200">Save Configuration</button>
+            </div>
+
+            <!-- STATE: Main Lobby (Connected) -->
+            <div id="lobby-main" class="hidden space-y-6">
+                <!-- Join Section -->
+                <div class="space-y-3">
+                    <label class="text-xs uppercase font-bold text-gray-400">Join Existing Game</label>
+                    <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
+                    <div class="flex gap-2">
+                        <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
+                        <button onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">
+                            Join Game
+                        </button>
+                    </div>
                 </div>
+
+                <div class="flex items-center gap-4">
+                    <div class="h-px bg-white/10 flex-1"></div>
+                    <span class="text-xs text-gray-500 font-bold">OR</span>
+                    <div class="h-px bg-white/10 flex-1"></div>
+                </div>
+
+                <!-- Create Section -->
+                <button onclick="createRoom()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold py-4 rounded-xl uppercase tracking-wide shadow-lg transition transform hover:scale-105">
+                    Host New Game
+                </button>
             </div>
 
-            <div class="flex items-center gap-4">
-                <div class="h-px bg-white/10 flex-1"></div>
-                <span class="text-xs text-gray-500 font-bold">OR</span>
-                <div class="h-px bg-white/10 flex-1"></div>
-            </div>
-
-            <!-- Create Section -->
-            <button onclick="createRoom()" class="w-full bg-spotify hover:bg-green-400 text-black font-bold py-4 rounded-xl uppercase tracking-wide shadow-lg transition transform hover:scale-105">
-                Host New Game
-            </button>
         </div>
     </div>
 
@@ -327,7 +420,7 @@
                 <div class="w-64 h-64 rounded-full border border-white/20 animate-pulse absolute"></div>
             </div>
 
-            <div id="player-status" class="text-xl text-gray-400 mb-8 font-bold tracking-wide z-10 text-center">Waiting...</div>
+            <div id="player-status" class="text-xl text-gray-400 mb-8 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
             
             <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden">
                 WAIT
