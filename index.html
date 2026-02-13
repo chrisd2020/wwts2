@@ -23,7 +23,7 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Timeline Animations from Working Version */
+        /* Timeline Animations */
         .timeline-marker {
             position: absolute; top: -5px; bottom: -5px; width: 2px; background: white; z-index: 10;
             transition: left 0.2s, background-color 0.1s, height 0.1s, top 0.1s; pointer-events: none;
@@ -52,7 +52,7 @@
         .custom-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
         .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
         
-        /* Interactive Timeline from Working Version */
+        /* Interactive Timeline */
         #timeline-container { cursor: default; }
         #timeline-container.interactive { cursor: ew-resize; pointer-events: auto; }
         #timeline-container.interactive:hover { height: 2.5rem; background-color: rgba(0,0,0,0.5); }
@@ -70,15 +70,15 @@
         let unsubscribeRoom = null;
         let isFirebaseReady = false;
 
-        // --- GAME STATE (Local Copy for Logic) ---
+        // --- GAME STATE (Local Copy for Loop Logic) ---
         let localState = {
             players: [],
             status: 'idle',
+            hasCut: false, // Critical addition from original
             startTime: 0,
             pauseTime: 0,
             autoCutTime: 10,
             isDragging: false,
-            fadeInterval: null,
             timerInterval: null
         };
 
@@ -185,7 +185,8 @@
                     players: [],
                     autoCutTime: 10,
                     startTime: 0,
-                    pauseTime: 0
+                    pauseTime: 0,
+                    hasCut: false
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -243,9 +244,10 @@
                 if(!doc.exists()) return;
                 const data = doc.data();
                 
-                // Update Local State for Loop
+                // --- UPDATE LOCAL STATE ---
                 localState.players = data.players || [];
                 localState.status = data.status;
+                localState.hasCut = data.hasCut;
                 localState.startTime = data.startTime || 0;
                 localState.pauseTime = data.pauseTime || 0;
                 localState.autoCutTime = data.autoCutTime || 10;
@@ -255,13 +257,12 @@
             });
         }
 
-        // --- HOST LOGIC (The Brain) ---
+        // --- HOST LOGIC (Matches Original Game Loop) ---
         
         function updateHostUI(data) {
-            // Update Players Grid & Markers
             renderHostPlayers(data);
             
-            // Slider/AutoCut
+            // Slider Control (Only if not dragging)
             if(document.activeElement !== document.getElementById('cutTimeSlider')) {
                 document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
                 document.getElementById('cutTimeSlider').value = data.autoCutTime;
@@ -269,75 +270,83 @@
                 document.getElementById('cut-marker').style.left = `${cutPos}%`;
             }
 
-            // Controls & Buttons
             const roundStatus = document.getElementById('round-status');
             const startBtn = document.getElementById('startRoundBtn');
             const revealBtn = document.getElementById('revealBtn');
             const timelineContainer = document.getElementById('timeline-container');
 
+            // --- STATUS HANDLING ---
+            
             if (data.status === 'playing') {
-                roundStatus.innerText = "Playing";
-                startBtn.innerText = "Stop Round";
-                startBtn.classList.replace('bg-blue-600', 'bg-red-600');
-                startBtn.onclick = () => window.hostCutMusic();
+                // Game Loop Active
+                if (!localState.timerInterval) startLoop();
                 
-                revealBtn.disabled = true;
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] opacity-50 cursor-not-allowed";
-
                 timelineContainer.classList.remove('interactive');
                 
-                // Start Loop if not running
-                if(!localState.timerInterval) startLoop();
+                if (data.hasCut) {
+                    roundStatus.innerText = "Music Cut";
+                    startBtn.innerText = "Force End Round"; 
+                    startBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                    startBtn.onclick = () => window.hostEndRound();
+                    
+                    revealBtn.disabled = true; // Wait for completion
+                    revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
+                } else {
+                    roundStatus.innerText = "Playing";
+                    startBtn.innerText = "Force Cut";
+                    startBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                    startBtn.onclick = () => window.hostTriggerCut();
+                    
+                    revealBtn.disabled = true;
+                }
 
-            } else if (data.status === 'cut') {
-                roundStatus.innerText = "Music Cut";
-                startBtn.innerText = "Next Round / Reset";
+            } else if (data.status === 'complete') {
+                // All Guesses In
+                if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
+
+                roundStatus.innerText = "Guesses In";
+                startBtn.innerText = "Reset Round";
                 startBtn.classList.replace('bg-red-600', 'bg-gray-700');
                 startBtn.onclick = () => window.hostResetRound();
-                
+
                 revealBtn.disabled = false;
                 revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition active:translate-y-1";
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 
                 timelineContainer.classList.add('interactive');
-                if(!localState.timerInterval) startLoop(); // Loop needed for paused state UI (rendering paused time)
 
             } else if (data.status === 'revealing') {
-                roundStatus.innerText = "Revealing";
-                startBtn.innerText = "Reset Round";
-                startBtn.classList.replace('bg-red-600', 'bg-gray-700'); 
-                startBtn.onclick = () => window.hostResetRound();
+                if(!localState.timerInterval) startLoop();
                 
+                roundStatus.innerText = "Revealing";
                 revealBtn.innerText = "⏸ Pause Reveal";
-                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
+                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 
-                timelineContainer.classList.add('interactive'); 
-                if(!localState.timerInterval) startLoop();
+                timelineContainer.classList.add('interactive');
 
             } else if (data.status === 'paused_reveal') {
+                if(!localState.timerInterval) startLoop(); // Loop to render frozen time
+
                 roundStatus.innerText = "Paused";
                 revealBtn.innerText = "▶ Resume Reveal";
                 revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 
                 timelineContainer.classList.add('interactive');
-                if(!localState.timerInterval) startLoop();
 
             } else {
-                // Lobby/Idle
+                // Lobby / Idle
+                if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
+                
                 roundStatus.innerText = "Idle";
                 startBtn.innerText = "▶ Start Round";
                 startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
                 startBtn.onclick = () => window.hostStartRound();
                 
                 revealBtn.disabled = true;
-                revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
-                
                 timelineContainer.classList.remove('interactive');
-                if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 
                 document.getElementById('gameTimer').innerText = "0.00";
                 document.getElementById('timeline-progress').style.width = "0%";
@@ -358,7 +367,6 @@
             grid.innerHTML = players.map((p, i) => {
                 const isBuzzed = p.buzzedAt !== null;
                 
-                // Add Timeline Marker
                 if (isBuzzed && data.status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
@@ -379,14 +387,14 @@
                         ${isBuzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
                         ${isBuzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
                     </div>
-                    ${(isBuzzed && (data.status === 'cut' || data.status === 'revealing' || data.status === 'paused_reveal')) ? 
+                    ${(isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal')) ? 
                         `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Select Winner</button>` 
                         : ''}
                 </div>
             `}).join('');
         }
 
-        // --- THE GAME LOOP (From Working Version) ---
+        // --- THE GAME LOOP ---
         function startLoop() {
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             
@@ -398,12 +406,12 @@
 
                 let elapsed = 0;
                 
-                if (localState.status === 'paused_reveal' || localState.status === 'cut') {
-                    elapsed = localState.pauseTime;
-                } else if (localState.status === 'playing' || localState.status === 'revealing') {
-                    // Calculate from start time
+                // In Original: status stays 'playing' even after cut.
+                if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
                     elapsed = Math.max(0, elapsed);
+                } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
+                    elapsed = localState.pauseTime;
                 }
 
                 // Update UI
@@ -411,13 +419,13 @@
                 document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
                 
                 // Highlight Logic
-                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'cut') {
+                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(elapsed);
                 }
 
-                // Auto Cut Logic
-                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && elapsed >= localState.autoCutTime) {
-                    window.hostCutMusic();
+                // Auto Cut Logic - Host Side Only
+                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && elapsed >= localState.autoCutTime) {
+                    window.hostTriggerCut();
                 }
 
                 localState.timerInterval = requestAnimationFrame(loop);
@@ -425,21 +433,20 @@
             localState.timerInterval = requestAnimationFrame(loop);
         }
 
-        // --- HOST ACTIONS (Equivalent to "Working Version" logic but updating Firebase) ---
+        // --- HOST ACTIONS ---
 
         window.hostStartRound = async () => {
-            // Reset players locally first to avoid flicker? No, trust Firebase.
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
             
-            // Clean players
             const snap = await getDoc(roomRef);
             const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
 
             await updateDoc(roomRef, {
                 status: 'playing',
-                startTime: Date.now(), // Use Date.now() for Sync
+                hasCut: false,
+                startTime: Date.now(),
                 pauseTime: 0,
                 autoCutTime: cutTime,
                 players: cleanPlayers
@@ -452,10 +459,14 @@
             }
         };
 
-        window.hostCutMusic = async () => {
-            if(localState.status !== 'playing') return;
+        window.hostTriggerCut = async () => {
+            // ONLY updates 'hasCut', NOT status. Status stays 'playing' so loop continues!
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            
+            await updateDoc(roomRef, { hasCut: true });
 
-            // Fade out locally
+            // Host fades music locally
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.05);
@@ -465,17 +476,14 @@
                     if(player) player.pause();
                 }
             }, 50);
+        };
 
-            // Calculate Pause Time based on actual elapsed
-            const elapsed = (Date.now() - localState.startTime) / 1000;
-            
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
-            await updateDoc(roomRef, {
-                status: 'cut',
-                pauseTime: elapsed
-            });
+        window.hostEndRound = async () => {
+             // Called manually or when all players buzz
+             const appId = window.__app_id || 'wwts-game'; 
+             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const elapsed = (Date.now() - localState.startTime) / 1000;
+             await updateDoc(roomRef, { status: 'complete', pauseTime: elapsed });
         };
 
         window.hostToggleReveal = async () => {
@@ -483,24 +491,14 @@
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
             if (localState.status === 'revealing') {
-                // PAUSE IT
+                // Pause
                 const elapsed = (Date.now() - localState.startTime) / 1000;
-                await updateDoc(roomRef, {
-                    status: 'paused_reveal',
-                    pauseTime: elapsed
-                });
+                await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: elapsed });
                 if(player) player.pause();
-            
             } else {
-                // RESUME / START REVEAL
-                // New Start Time = Now - Previously Elapsed
-                let currentElapsed = localState.pauseTime;
-                
-                await updateDoc(roomRef, {
-                    status: 'revealing',
-                    startTime: Date.now() - (currentElapsed * 1000)
-                });
-                
+                // Resume
+                const currentElapsed = localState.pauseTime;
+                await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - (currentElapsed * 1000) });
                 if(player) {
                     await player.setVolume(0.8);
                     await player.seek(currentElapsed * 1000);
@@ -512,7 +510,7 @@
         window.hostResetRound = async () => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             await updateDoc(roomRef, { status: 'lobby' });
+             await updateDoc(roomRef, { status: 'lobby', hasCut: false });
              if(player) player.pause();
         };
 
@@ -551,7 +549,7 @@
                 const appId = window.__app_id || 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
 
-                if (localState.status === 'paused_reveal' || localState.status === 'cut') {
+                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                      await updateDoc(roomRef, { pauseTime: seconds });
                 } else if (localState.status === 'revealing') {
                      await updateDoc(roomRef, { startTime: Date.now() - (seconds * 1000) });
@@ -590,7 +588,7 @@
                 if (p.id === closestId) { 
                     if(card) {
                         card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                        card.classList.remove('winner-card'); // Remove generic bg to let highlight shine
+                        card.classList.remove('winner-card');
                     }
                     if(marker) marker.classList.add('marker-closest');
                 } else {
@@ -611,33 +609,38 @@
             const buzzContainer = document.getElementById('buzz-container');
 
             if (data.status === 'playing') {
-                statusEl.innerText = "LISTEN...";
-                statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
-                buzzBtn.disabled = true;
-                buzzBtn.innerText = "LISTEN";
-                buzzBtn.classList.add('opacity-50', 'grayscale');
-                buzzContainer.classList.remove('buzz-anim');
-            } else if (data.status === 'cut') {
-                statusEl.innerText = "SING!";
-                statusEl.className = "text-4xl font-black text-red-500";
-                
-                const myData = data.players.find(p => p.id === user.uid);
-                if (myData && myData.buzzedAt) {
-                    buzzBtn.innerText = "BUZZED!";
-                    buzzBtn.disabled = true;
-                    buzzBtn.className = "w-64 h-64 rounded-full bg-green-500 text-black font-black text-3xl shadow-[0_0_30px_lime]";
+                if (data.hasCut) {
+                    // SING MODE
+                    statusEl.innerText = "SING!";
+                    statusEl.className = "text-4xl font-black text-red-500";
+                    buzzContainer.classList.remove('buzz-anim');
+                    
+                    const myData = data.players.find(p => p.id === user.uid);
+                    if (myData && myData.buzzedAt) {
+                        buzzBtn.innerText = "BUZZED!";
+                        buzzBtn.disabled = true;
+                        buzzBtn.className = "w-64 h-64 rounded-full bg-green-500 text-black font-black text-3xl shadow-[0_0_30px_lime]";
+                    } else {
+                        buzzBtn.innerText = "BUZZ!";
+                        buzzBtn.disabled = false;
+                        buzzBtn.className = "w-64 h-64 rounded-full bg-red-600 text-white font-black text-4xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                        if(navigator.vibrate) navigator.vibrate(200);
+                    }
                 } else {
-                    buzzBtn.innerText = "BUZZ!";
-                    buzzBtn.disabled = false;
-                    buzzBtn.className = "w-64 h-64 rounded-full bg-red-600 text-white font-black text-4xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                    if(navigator.vibrate) navigator.vibrate(200);
+                    // LISTEN MODE
+                    statusEl.innerText = "LISTEN...";
+                    statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
+                    buzzBtn.disabled = true;
+                    buzzBtn.innerText = "LISTEN";
+                    buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+                    buzzContainer.classList.remove('buzz-anim');
                 }
             } else {
                 statusEl.innerText = "Waiting for Host...";
                 statusEl.className = "text-xl text-gray-400";
                 buzzBtn.disabled = true;
                 buzzBtn.innerText = "WAIT";
-                buzzBtn.classList.add('opacity-50', 'grayscale');
+                buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
             }
         }
 
@@ -646,7 +649,9 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // Calculate elapsed based on Host's PauseTime (Since it's cut)
+            // NOTE: We calculate buzzedAt based on Time Elapsed from Start.
+            // This ensures markers land after the cut line correctly.
+            const elapsed = (Date.now() - localState.startTime) / 1000;
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
             try {
@@ -655,19 +660,16 @@
                     if (!docSnap.exists()) return;
                     const data = docSnap.data();
                     
-                    if (data.status !== 'cut') return; // Only buzz if cut
+                    if (!data.hasCut) return; // Only buzz if cut
 
                     const players = data.players;
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
-                        // Use the Host's stored pauseTime + random reaction simulation
-                        // Or just use the pauseTime because in "Singing", the time doesn't matter as much as *who* buzzed, 
-                        // but the game logic uses time to order them. 
-                        // We will use the 'pauseTime' stored in DB so markers align with the cut line.
-                        // Add a tiny random fraction to avoid collision.
-                        players[myIndex].buzzedAt = data.pauseTime + (Math.random() * 0.1); 
+                        players[myIndex].buzzedAt = elapsed; 
                         t.update(roomRef, { players: players });
+                        
+                        // Check if all players buzzed? Host usually handles end, but we can optimistically check.
                     }
                 });
             } catch(e) { console.error("Buzz failed", e); btn.innerText = "RETRY"; }
