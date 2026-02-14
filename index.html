@@ -66,10 +66,9 @@
         /* Confetti Animation */
         .confetti {
             position: fixed; 
-            top: -50px; /* Ensure it starts off-screen */
+            top: -50px; 
             width: 10px; height: 10px; background: #ffd700;
             z-index: 100; pointer-events: none;
-            /* Changed fill-mode to 'both' so it stays at the start keyframe during delay */
             animation: confetti-fall 3s linear both; 
         }
         @keyframes confetti-fall {
@@ -475,6 +474,7 @@
             const cutDisplay = document.getElementById('cutTimeDisplay');
             const cutSlider = document.getElementById('cutTimeSlider');
             const startBtn = document.getElementById('startRoundBtn');
+            const nextBtn = document.getElementById('nextRoundBtn');
             const revealBtn = document.getElementById('revealBtn');
             const roundStatus = document.getElementById('round-status');
             const timelineContainer = document.getElementById('timeline-container');
@@ -511,7 +511,7 @@
                 if(img) img.innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
             }
             
-            if (!startBtn || !revealBtn || !roundStatus) return;
+            if (!startBtn || !revealBtn || !roundStatus || !nextBtn) return;
 
             if (data.status === 'playing') {
                 if (!localState.timerInterval) startLoop();
@@ -519,6 +519,7 @@
                 revealBtn.disabled = true; 
                 revealBtn.innerText = "Reveal Music";
                 revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl w-full";
+                nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
 
                 if (data.hasCut) {
                     roundStatus.innerText = "Music Cut";
@@ -537,6 +538,7 @@
                 startBtn.innerText = "Reset Round";
                 startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                 startBtn.onclick = () => window.hostResetRound();
+                nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
                 
                 revealBtn.disabled = false;
                 revealBtn.innerText = "🔊 Reveal Music";
@@ -546,17 +548,31 @@
             } else if (data.status === 'revealing' || data.status === 'paused_reveal') {
                 if(!localState.timerInterval) startLoop();
                 roundStatus.innerText = data.status === 'revealing' ? "Revealing" : "Paused";
+                startBtn.innerText = "Reset Round";
+                startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
+                startBtn.onclick = () => window.hostResetRound();
+                nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
+
                 revealBtn.disabled = false;
                 revealBtn.innerText = data.status === 'revealing' ? "Pause Reveal" : "Resume Reveal";
                 revealBtn.className = data.status === 'revealing' ? "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow w-full" : "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 if(timelineContainer) timelineContainer.classList.add('interactive');
             } else {
+                // STATUS: LOBBY
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 roundStatus.innerText = "Idle";
                 startBtn.innerText = "Start Round";
-                startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                 startBtn.onclick = () => window.hostStartRound();
+                
+                // IF WINNER JUST AWARDED: Focus on Next Song
+                if (data.lastWinnerId) {
+                    startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white/50 font-bold py-4 rounded-xl transition w-full uppercase text-sm";
+                    nextBtn.className = "bg-[#1DB954] hover:bg-green-400 text-black font-black py-4 rounded-xl shadow-[0_0_20px_rgba(29,185,84,0.4)] transition active:translate-y-1 w-full uppercase text-sm";
+                } else {
+                    startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full uppercase text-sm";
+                    nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
+                }
                 
                 revealBtn.disabled = true;
                 revealBtn.innerText = "Reveal Music";
@@ -576,7 +592,6 @@
             let closestId = null;
             let minDiff = Infinity;
 
-            // First pass: Find the absolute closest marker to the current playhead
             markers.forEach(m => {
                 const avatar = m.querySelector('.timeline-avatar');
                 if (!avatar) return;
@@ -588,9 +603,6 @@
                 }
             });
 
-            // Second pass: Update highlighting. 
-            // This ensures exactly one player is highlighted (the winner at that moment) 
-            // regardless of distance.
             markers.forEach(m => {
                 if (closestId && m.id === closestId) {
                     m.classList.add('marker-closest');
@@ -761,7 +773,7 @@
              const snap = await getDoc(roomRef);
              const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
              localState.localAudioAnchor = null; localState.localHasPaused = false;
-             await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
+             await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0, lastWinnerId: null });
              if(playerInstance) playerInstance.pause();
         };
 
@@ -986,7 +998,6 @@
                         const snap = await getDoc(roomRef); 
                         const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
                         
-                        // SYNC POINT: Update metadata UI exactly when we trigger the new round
                         const t = document.getElementById('track-name');
                         if(t) t.innerText = track.name;
                         const a = document.getElementById('artist-name');
@@ -994,7 +1005,6 @@
                         const art = document.getElementById('album-art');
                         if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
 
-                        // Re-enable host volume now that round is starting
                         if(playerInstance) await playerInstance.setVolume(0.8);
 
                         await updateDoc(roomRef, { 
@@ -1064,7 +1074,7 @@
             }
             if (scoreboard) {
                 const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
-                scoreboard.innerHTML = sorted.map(p => `<div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0"><span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">${p.id === user.uid ? '⭐ ' : ''}${p.name}</span><span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span></div>`).join('');
+                scoreboard.innerHTML = sorted.map(p => `<div class="flex justify-between p-2 border-b border-white/5 last:border-0"><span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">${p.id === user.uid ? '⭐ ' : ''}${p.name}</span><span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span></div>`).join('');
             }
         }
 
@@ -1080,7 +1090,6 @@
              localState.localAudioAnchor = null; 
              localState.localHasPaused = false;
 
-             // OPTIMISTIC UI CLEAR: Clear metadata immediately so host doesn't see old song info
              const t = document.getElementById('track-name');
              if(t) t.innerText = "Skipping...";
              const a = document.getElementById('artist-name');
@@ -1090,7 +1099,6 @@
 
              if(playerInstance) { 
                  await playerInstance.activateElement(); 
-                 // MUTE HOST: Don't let host hear the next song until metadata is ready and round starts
                  await playerInstance.setVolume(0); 
                  await playerInstance.nextTrack(); 
                  await playerInstance.resume(); 
@@ -1099,7 +1107,8 @@
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              await updateDoc(roomRef, { 
                  status: 'lobby', 
-                 currentTrackUri: null 
+                 currentTrackUri: null,
+                 lastWinnerId: null
              });
         };
         
@@ -1213,7 +1222,11 @@
                 <div class="flex gap-4 items-center"><div id="album-art" class="w-20 h-20 bg-black/40 rounded-lg flex items-center justify-center shrink-0 overflow-hidden text-2xl">🎵</div><div class="flex-1 min-w-0"><div id="round-status" class="text-[10px] uppercase font-black text-yellow-500 mb-1 tracking-widest">Lobby</div><h2 id="track-name" class="text-2xl font-black leading-tight truncate uppercase">Waiting...</h2><p id="artist-name" class="text-sm text-gray-400 truncate">---</p></div><div class="text-right shrink-0"><div id="gameTimer" class="text-4xl font-mono font-bold text-white tabular-nums">0.00</div><div class="text-[9px] text-gray-500 uppercase mt-0.5">Sync</div></div></div>
                 <div id="timeline-container" class="mt-4 relative h-6 bg-black/30 rounded-lg w-full overflow-visible touch-none"><div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-lg opacity-80 pointer-events-none transition-all duration-75"></div><div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div><div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none" style="left: 16%;"></div></div>
             </div>
-            <div class="grid grid-cols-3 gap-3 shrink-0"><button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Start Round</button><button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Next Song</button><button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3.5 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 text-sm uppercase" disabled>Reveal Music</button></div>
+            <div class="grid grid-cols-3 gap-3 shrink-0">
+                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full uppercase text-sm">Start Round</button>
+                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm">Next Song</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 w-full uppercase text-sm" disabled>Reveal Music</button>
+            </div>
             <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
         </div>
     </div>
