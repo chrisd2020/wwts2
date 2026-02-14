@@ -801,11 +801,25 @@
 
         function updateAuthUI() {
              const h = document.getElementById('status-indicator');
-             if(h) { h.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected'; h.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400'; }
+             if(h) { 
+                 h.innerHTML = `
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected
+                        <button onclick="logout()" class="ml-2 text-[9px] text-gray-500 hover:text-white underline decoration-dotted">Logout Spotify</button>
+                    </div>`; 
+                 h.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400'; 
+             }
              const panel = document.getElementById('auth-panel');
              if(panel) panel.classList.add('hidden');
+             
              const p = document.getElementById('player-spotify-status');
-             if(p) { p.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked'; p.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20'; }
+             if(p) { 
+                 p.innerHTML = `
+                    <span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked
+                    <button onclick="logout()" class="ml-2 px-2 py-0.5 rounded bg-black/40 text-[8px] hover:bg-black/60 transition">Logout</button>
+                 `; 
+                 p.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20'; 
+             }
              const pAuth = document.getElementById('player-spotify-auth');
              if(pAuth) pAuth.classList.add('hidden');
         }
@@ -842,6 +856,13 @@
             } catch(e) { console.error(e); }
         }
 
+        window.logout = () => { 
+            localStorage.removeItem('wwts_host_token'); 
+            localStorage.removeItem('wwts_refresh_token'); 
+            localStorage.removeItem('wwts_token_expiry');
+            window.location.reload(); 
+        };
+
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
 
@@ -852,7 +873,7 @@
             playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: async cb => { const t = await getValidToken(); cb(t); }, volume: 0.8 });
             
             playerInstance.addListener('ready', async ({ device_id }) => { 
-                deviceId = device_id; gameLog("Spotify Player Ready. Device ID: " + deviceId.substring(0, 5) + "...", "success");
+                deviceId = device_id; gameLog("Spotify Player Ready. Device ID: " + device_id.substring(0, 5) + "...", "success");
                 updateAuthUI(); 
                 try {
                     const tokenToUse = await getValidToken();
