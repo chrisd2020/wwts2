@@ -568,18 +568,33 @@
 
         function highlightClosest(audioElapsed) {
             const markers = document.querySelectorAll('.timeline-marker');
+            if (markers.length === 0) return;
+
             let closestId = null;
             let minDiff = Infinity;
+
+            // First pass: Find the absolute closest marker to the current playhead
             markers.forEach(m => {
-                m.classList.remove('marker-closest');
-                const pTime = parseFloat(m.querySelector('.timeline-avatar')?.innerText.split(' ')[1] || "999");
+                const avatar = m.querySelector('.timeline-avatar');
+                if (!avatar) return;
+                const pTime = parseFloat(avatar.innerText.split(' ')[1] || "999");
                 const diff = Math.abs(audioElapsed - pTime);
-                if (diff < minDiff && diff < 1) { minDiff = diff; closestId = m.id; }
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestId = m.id;
+                }
             });
-            if (closestId) {
-                const el = document.getElementById(closestId);
-                if(el) el.classList.add('marker-closest');
-            }
+
+            // Second pass: Update highlighting. 
+            // This ensures exactly one player is highlighted (the winner at that moment) 
+            // regardless of distance.
+            markers.forEach(m => {
+                if (closestId && m.id === closestId) {
+                    m.classList.add('marker-closest');
+                } else {
+                    m.classList.remove('marker-closest');
+                }
+            });
         }
 
         function renderHostPlayers(data) {
