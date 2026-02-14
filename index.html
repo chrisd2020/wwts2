@@ -364,19 +364,23 @@
                     const targetPosition = Date.now() - localState.startTime;
                     if (oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri) {
                         // Start fresh
-                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                            method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
-                        });
+                        try {
+                            await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                                method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
+                            });
+                        } catch(e) { console.error("Sync Play Error:", e); }
                     }
                 }
             } else if (localState.status === 'revealing') {
                 const targetPosition = Date.now() - localState.startTime;
                 if (oldStatus !== 'revealing') {
-                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
-                    });
+                    try {
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
+                        });
+                    } catch(e) { console.error("Sync Reveal Error:", e); }
                 }
             } else {
                 // Lobby, Complete, or Paused
@@ -960,26 +964,42 @@
             if(playerInit) return;
             playerInit = true;
             playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: cb => { cb(token); }, volume: 0.8 });
-            playerInstance.addListener('ready', ({ device_id }) => { deviceId = device_id; updateAuthUI(); playerInstance.pause(); });
+            
+            playerInstance.addListener('ready', async ({ device_id }) => { 
+                deviceId = device_id; 
+                updateAuthUI(); 
+                
+                // --- CRITICAL: TRANSFER PLAYBACK ---
+                // We must tell Spotify to use this new device as the active player
+                try {
+                    await fetch('https://api.spotify.com/v1/me/player', {
+                        method: 'PUT',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ device_ids: [device_id], play: false })
+                    });
+                } catch(e) { console.error("Transfer error:", e); }
+
+                // Check if we're a player and need to show the "Start Audio" overlay
+                if (document.getElementById('host-screen').classList.contains('hidden')) {
+                    document.getElementById('player-audio-primer').classList.remove('hidden');
+                }
+            });
             
             playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
                 
                 // --- HOST BROADCAST LOGIC ---
-                // If I'm the host, I broadcast what's playing so clients can sync
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
                     const appId = window.__app_id || 'wwts-game'; 
                     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
-                    // Display on Host UI
                     if (localState.status !== 'lobby') {
                         document.getElementById('track-name').innerText = track.name;
                         document.getElementById('artist-name').innerText = track.artists[0].name;
                         document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
 
-                    // Update database for clients
                     if (localState.currentTrackUri !== track.uri) {
                         await updateDoc(roomRef, { currentTrackUri: track.uri });
                     }
@@ -987,6 +1007,16 @@
             });
             playerInstance.connect();
         }
+
+        window.primeAudio = async () => {
+            if (playerInstance) {
+                // Priming the player satisfies the browser's requirement for a user gesture
+                await playerInstance.activateElement();
+                document.getElementById('player-audio-primer').classList.add('hidden');
+                // Force a sync check
+                handlePlayerAudioSync('idle', false, null);
+            }
+        };
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
@@ -1089,6 +1119,14 @@
 
     <!-- PLAYER SCREEN (Remote) -->
     <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
+        <!-- Audio Gesture Primer -->
+        <div id="player-audio-primer" class="hidden fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md">
+            <div class="text-4xl mb-4">🔊</div>
+            <h2 class="text-2xl font-bold text-white mb-2">Spotify Linked!</h2>
+            <p class="text-sm text-gray-400 mb-6">Browsers require a tap to enable synchronized audio.</p>
+            <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
+        </div>
+
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left">
                 <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
