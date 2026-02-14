@@ -406,6 +406,8 @@
                     markersContainer.appendChild(marker);
                 }
 
+                const canAward = isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
+
                 return `
                 <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'winner-card' : ''}">
                     <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center transition shadow z-20" title="Remove Player">×</button>
@@ -417,8 +419,8 @@
                         ${isBuzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
                         ${isBuzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
                     </div>
-                    ${(isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal')) ? 
-                        `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Award Win (+1)</button>` 
+                    ${canAward ? 
+                        `<button id="award-btn-${p.id}" onclick="awardWin('${p.id}')" class="award-btn hidden text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Confirm Winner (+1)</button>` 
                         : ''}
                 </div>
             `}).join('');
@@ -572,7 +574,18 @@
         window.hostResetRound = async () => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             await updateDoc(roomRef, { status: 'lobby', hasCut: false });
+             
+             // Explicitly clear buzzers and elapsed time on reset
+             const snap = await getDoc(roomRef);
+             const players = snap.data().players || [];
+             const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
+
+             await updateDoc(roomRef, { 
+                status: 'lobby', 
+                hasCut: false,
+                players: cleanPlayers,
+                pauseTime: 0
+             });
              if(player) player.pause();
         };
 
@@ -675,6 +688,7 @@
             players.forEach(p => {
                 const card = document.getElementById(`player-card-${p.id}`);
                 const marker = document.getElementById(`marker-${p.id}`);
+                const awardBtn = document.getElementById(`award-btn-${p.id}`);
                 
                 if (p.id === closestId) { 
                     if(card) {
@@ -682,12 +696,15 @@
                         card.classList.remove('winner-card');
                     }
                     if(marker) marker.classList.add('marker-closest');
+                    // Only show "Award Win" for the currently highlighted (closest) player
+                    if(awardBtn) awardBtn.classList.remove('hidden');
                 } else {
                     if(card) {
                         card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
                         if(p.buzzedAt !== null) card.classList.add('winner-card');
                     }
                     if(marker) marker.classList.remove('marker-closest');
+                    if(awardBtn) awardBtn.classList.add('hidden');
                 }
             });
         }
