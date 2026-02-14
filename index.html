@@ -275,7 +275,7 @@
                 localStorage.setItem('wwts_active_room_id', roomId);
                 document.getElementById('lobby-screen').classList.add('hidden');
                 document.getElementById('player-screen').classList.remove('hidden');
-                document.getElementById('player-room-code').innerText = code;
+                document.getElementById('player-room-code').innerText = roomId;
                 document.getElementById('player-name-display').innerText = name;
 
                 subscribeToRoom(code, 'player');
@@ -547,6 +547,11 @@
             if(player) {
                 await player.setVolume(0.8);
                 if (data.queuedPlaylist) {
+                    // SHUFFLE ENABLE: Ensure shuffle is true for this session
+                    await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    
                     await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                         method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
