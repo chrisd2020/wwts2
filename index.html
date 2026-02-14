@@ -628,11 +628,31 @@
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
             const snap = await getDoc(roomRef);
+            if (!snap.exists()) return;
             const data = snap.data();
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
 
             localState.localAudioAnchor = null;
             localState.localHasPaused = false;
+
+            // Prioritize Spotify Start
+            if(playerInstance) {
+                await playerInstance.activateElement();
+                await playerInstance.setVolume(0.8);
+                if (data.queuedPlaylist) {
+                    const tokenToUse = await getValidToken();
+                    await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
+                    });
+                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
+                    });
+                } else {
+                    await playerInstance.seek(0);
+                    await playerInstance.resume();
+                }
+            }
 
             await updateDoc(roomRef, {
                 status: 'playing',
@@ -644,24 +664,6 @@
                 queuedPlaylist: null,
                 lastWinnerId: null
             });
-
-            if(playerInstance) {
-                await playerInstance.setVolume(0.8);
-                if (data.queuedPlaylist) {
-                    const tokenToUse = await getValidToken();
-                    await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
-                    });
-                    
-                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
-                    });
-                } else {
-                    await playerInstance.seek(0);
-                    await playerInstance.resume();
-                }
-            }
         };
 
         window.hostTriggerCut = async () => {
@@ -706,6 +708,7 @@
         window.hostResetRound = async () => {
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const snap = await getDoc(roomRef);
+             if (!snap.exists()) return;
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
              localState.localAudioAnchor = null;
@@ -859,7 +862,6 @@
                         buzzBtn.disabled = true;
                         buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
                     } else {
-                        // EXPLICITLY ENABLE BUTTON ON CLIENT
                         buzzBtn.disabled = false;
                         buzzBtn.innerText = "BUZZ!";
                         buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
@@ -1107,7 +1109,11 @@
         };
 
         document.getElementById('nextRoundBtn').onclick = async () => {
-             if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
+             if(playerInstance) { 
+                await playerInstance.activateElement();
+                await playerInstance.setVolume(0.8); 
+                await playerInstance.nextTrack(); 
+             }
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
              const snap = await getDoc(roomRef);
