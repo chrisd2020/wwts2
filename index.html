@@ -124,7 +124,7 @@
             localAudioAnchor: null, 
             isSpotifyPlaying: false,
             localHasPaused: false,
-            isPendingNext: false // New: Handles skip-track race condition
+            isPendingNext: false
         };
 
         function getFirebaseConfig() {
@@ -149,6 +149,8 @@
                 const setup = document.getElementById('lobby-setup');
                 if(loading) loading.classList.add('hidden');
                 if(setup) setup.classList.remove('hidden');
+                // Fallback to lobby-main if setup doesn't exist
+                if(!setup) showMainLobby();
                 return;
             }
 
@@ -229,14 +231,11 @@
                 });
             } catch(e) { 
                 gameLog("Firebase Init Error: " + e.message, "error");
-                const loading = document.getElementById('lobby-loading');
-                const setup = document.getElementById('lobby-setup');
-                if(loading) loading.classList.add('hidden');
-                if(setup) setup.classList.remove('hidden');
+                showMainLobby();
             }
         }
 
-        function showMainLobby() {
+        window.showMainLobby = function() {
             const loading = document.getElementById('lobby-loading');
             const setup = document.getElementById('lobby-setup');
             const main = document.getElementById('lobby-main');
@@ -767,6 +766,17 @@
             } catch(e) { console.error("Buzz failed", e); if(btn) btn.innerText = "RETRY"; }
         };
 
+        window.toggleSyncTest = async (el) => {
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             await updateDoc(roomRef, { isTestMode: el.checked });
+        };
+
+        window.selectPlaylist = async (uri, name, img) => {
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
+            gameLog("Playlist queued: " + name, "success");
+        };
+
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
         let token = localStorage.getItem('wwts_host_token');
@@ -783,7 +793,6 @@
              const storedId = localStorage.getItem(CLIENT_ID_KEY);
              if(storedId) document.querySelectorAll('.client-id-input').forEach(i => i.value = storedId);
              
-             // --- ENTER KEY FOR SEARCH ---
              const searchInput = document.getElementById('search-input');
              if (searchInput) {
                  searchInput.addEventListener('keydown', (e) => {
@@ -792,7 +801,6 @@
              }
         });
 
-        // --- TIMELINE DRAGGING LOGIC ---
         const timelineContainer = document.getElementById('timeline-container');
         const handleTimelineInteraction = (e) => {
             if (!localState.status.includes('reveal') && localState.status !== 'complete') return;
@@ -920,7 +928,6 @@
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
-                    // --- NEW: Next Track Handling ---
                     if (localState.isPendingNext && track.uri) {
                         localState.isPendingNext = false;
                         gameLog("New song confirmed: " + track.name, "success");
@@ -1010,14 +1017,12 @@
                  await playerInstance.activateElement(); 
                  await playerInstance.setVolume(0.8); 
                  await playerInstance.nextTrack(); 
-                 await playerInstance.resume(); // Fix: Force host playback
+                 await playerInstance.resume(); 
              }
              
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             
-             // Reset state and clear URI in DB to prevent clients from playing old track
              await updateDoc(roomRef, { 
-                 status: 'lobby', // Set to lobby while we wait for the skip to finish
+                 status: 'lobby', 
                  currentTrackUri: null 
              });
         };
@@ -1050,10 +1055,18 @@
     <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
         <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2 text-center uppercase">Win When They're Singing</h1>
         <p class="text-gray-400 mb-8 font-bold tracking-widest uppercase text-xs">Multiplayer Edition</p>
+        
         <div id="lobby-loading" class="text-center">
             <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
             <p class="text-gray-400 uppercase text-xs font-black">Connecting...</p>
         </div>
+
+        <div id="lobby-setup" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5 text-center">
+            <h2 class="text-xl font-bold text-white uppercase">Configuration Required</h2>
+            <p class="text-sm text-gray-400">Firebase configuration is missing or pending. Please check the Canvas environment variables.</p>
+            <button onclick="showMainLobby()" class="block w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-4 rounded-full transition uppercase text-sm">Enter Demo Mode</button>
+        </div>
+
         <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
             <div class="space-y-3">
                 <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
@@ -1085,7 +1098,6 @@
             <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase">Link</button>
         </div>
         <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
-            <!-- WIN OVERLAY -->
             <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
                 <div class="text-8xl mb-4">🏆</div><h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter uppercase">You Won!</h2><p class="text-xl text-white font-bold">The host awarded you a point!</p>
             </div>
@@ -1113,5 +1125,6 @@
             <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
         </div>
     </div>
+    <div id="host-scoreboard" class="hidden"></div> <!-- Placeholder for scoreboard data if needed globally -->
 </body>
 </html>
