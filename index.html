@@ -342,6 +342,12 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
+                // CRITICAL: Handle the "Cut" state locally for audio synchronization
+                if (localState.status === 'playing' && localState.hasCut && !localState.localHasPaused) {
+                    gameLog("Server triggered CUT. Executing local cut.", "warn");
+                    localTriggerAudioCut();
+                }
+
                 if (role === 'host' && oldStatus !== localState.status) {
                     gameLog("Room status changed: " + oldStatus + " -> " + localState.status, "warn");
                 }
@@ -369,21 +375,29 @@
 
         async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
+
+            // Ensure timer starts immediately if status is playing
+            if (localState.status === 'playing' && localState.startTime > 0 && localState.localAudioAnchor === null) {
+                localState.localAudioAnchor = localState.startTime;
+            }
+
             const shouldPlayOnClient = (localState.status === 'playing' && (!localState.localHasPaused || localState.isTestMode));
             if (shouldPlayOnClient) {
                 const targetPosition = Math.max(0, Date.now() - localState.startTime);
                 const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
                 if (needsInitialPlay) {
-                    if (localState.localAudioAnchor === null) localState.localAudioAnchor = Date.now() - targetPosition;
                     try {
                         const tokenToUse = await getValidToken();
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: targetPosition })
                         });
+                        gameLog("Client audio started at " + (targetPosition/1000).toFixed(2) + "s", "success");
                     } catch(e) { console.error("Sync Play Error:", e); }
                 }
-            } else { playerInstance.pause(); }
+            } else if (!localState.isTestMode) { 
+                playerInstance.pause(); 
+            }
         }
 
         function handleLogout() {
@@ -538,8 +552,17 @@
             function loop() {
                 if (localState.isDragging) { localState.timerInterval = requestAnimationFrame(loop); return; }
                 let audioElapsed = 0;
-                if (localState.localAudioAnchor !== null) audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
-                if (localState.status === 'paused_reveal' || localState.status === 'complete') audioElapsed = localState.pauseTime;
+                
+                if (localState.localAudioAnchor !== null) {
+                    audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
+                } else if (localState.status === 'playing' && localState.startTime > 0) {
+                    localState.localAudioAnchor = localState.startTime;
+                    audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
+                }
+
+                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
+                    audioElapsed = localState.pauseTime;
+                }
 
                 const hostTimer = document.getElementById('gameTimer');
                 const hostProgress = document.getElementById('timeline-progress');
@@ -558,13 +581,14 @@
 
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') highlightClosest(audioElapsed);
                 
+                // Host-only logic for triggering auto-cut if not in test mode
                 if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
-                    if (!localState.localHasPaused) {
-                        localTriggerAudioCut();
-                        const hScreen = document.getElementById('host-screen');
-                        if (roomId && hScreen && !hScreen.classList.contains('hidden') && !localState.hasCut) {
-                            const cutCheck = document.getElementById('autoCutToggle');
-                            if (cutCheck && cutCheck.checked) window.hostTriggerCut();
+                    const hScreen = document.getElementById('host-screen');
+                    const isHost = hScreen && !hScreen.classList.contains('hidden');
+                    if (isHost && roomId && !localState.hasCut) {
+                        const cutCheck = document.getElementById('autoCutToggle');
+                        if (cutCheck && cutCheck.checked) {
+                            window.hostTriggerCut();
                         }
                     }
                 }
@@ -576,14 +600,19 @@
         async function localTriggerAudioCut() {
             if (localState.localHasPaused) return;
             localState.localHasPaused = true;
-            gameLog("Local Audio Cut Triggered (Fading out)", "warn");
+            gameLog("Audio cut execution (Fade-out starting)", "warn");
+            
             if (localState.isTestMode) return;
+            
             let vol = 0.8;
             const fade = setInterval(() => {
-                vol = Math.max(0, vol - 0.05);
+                vol = Math.max(0, vol - 0.1); // Slightly faster fade for better responsiveness
                 if(playerInstance) playerInstance.setVolume(vol);
-                if(vol <= 0) { clearInterval(fade); if(playerInstance) playerInstance.pause(); }
-            }, 50);
+                if(vol <= 0) { 
+                    clearInterval(fade); 
+                    if(playerInstance) playerInstance.pause(); 
+                }
+            }, 40);
         }
 
         window.selectPlaylist = async (uri, name, img) => {
@@ -620,41 +649,31 @@
                 localState.localHasPaused = false;
 
                 const tokenToUse = await getValidToken();
-                gameLog("Token validated. Device ID: " + deviceId.substring(0, 5) + "...");
 
                 if(playerInstance) {
-                    gameLog("Activating Spotify Element...");
                     await playerInstance.activateElement();
                     await playerInstance.setVolume(0.8);
                     
                     if (data.queuedPlaylist) {
-                        gameLog("Branch A: Playing fresh context: " + data.queuedPlaylist.name);
                         await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
                         });
-                        const playRes = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                         });
-                        gameLog("Spotify Play (New Context) Status: " + playRes.status);
                         await updateDoc(roomRef, { queuedPlaylist: null });
                     } else if (localState.currentTrackUri) {
-                        gameLog("Branch B: Re-playing track: " + localState.currentTrackUri.substring(0, 15) + "...");
-                        const playRes = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: 0 })
                         });
-                        gameLog("Spotify Play (Existing Track) Status: " + playRes.status);
                     } else {
-                        gameLog("Branch C: No track/playlist. Attempting internal seek/resume...", "warn");
                         await playerInstance.seek(0);
                         await playerInstance.resume();
                     }
-                } else {
-                    gameLog("Error: playerInstance is null", "error");
                 }
 
-                gameLog("Updating database status to 'playing'...");
                 await updateDoc(roomRef, {
                     status: 'playing', hasCut: false, startTime: Date.now(),
                     pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, lastWinnerId: null
@@ -912,6 +931,75 @@
         window.primeAudio = async () => {
             if (playerInstance) { await playerInstance.activateElement(); document.getElementById('player-audio-primer').classList.add('hidden'); handlePlayerAudioSync('idle', false, null); }
         };
+
+        function updatePlayerUI(data) {
+            const buzzBtn = document.getElementById('player-buzz-btn');
+            const statusEl = document.getElementById('player-status');
+            const buzzContainer = document.getElementById('buzz-container');
+            const scoreboard = document.getElementById('player-scoreboard');
+            const winOverlay = document.getElementById('win-overlay');
+
+            if (data.status === 'playing' || data.status === 'revealing') {
+                if (!localState.timerInterval) startLoop();
+            }
+
+            if (data.lastWinnerId === user.uid) {
+                if(winOverlay) winOverlay.classList.remove('hidden');
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
+            } else {
+                if(winOverlay) winOverlay.classList.add('hidden');
+            }
+
+            if (!statusEl || !buzzBtn) return;
+
+            if (data.status === 'playing') {
+                if (data.hasCut) {
+                    statusEl.innerText = data.isTestMode ? "TEST SYNC..." : "SING!";
+                    statusEl.className = data.isTestMode ? "text-2xl font-bold text-yellow-400" : "text-4xl font-black text-red-500";
+                    
+                    const myData = data.players.find(p => p.id === user.uid);
+                    if (myData && myData.buzzedAt !== null) {
+                        buzzBtn.innerText = "BUZZED!";
+                        buzzBtn.disabled = true;
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
+                    } else {
+                        buzzBtn.disabled = false;
+                        buzzBtn.innerText = "BUZZ!";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                    }
+                } else {
+                    statusEl.innerText = "LISTEN...";
+                    statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
+                    buzzBtn.disabled = true;
+                    buzzBtn.innerText = "LISTEN";
+                    buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+                }
+            } else if (data.status === 'complete') {
+                statusEl.innerText = "Round Over";
+                statusEl.className = "text-xl text-yellow-400 font-bold";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "DONE";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-none opacity-80";
+            } else {
+                statusEl.innerText = "Waiting for Host...";
+                statusEl.className = "text-xl text-gray-400";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "WAIT";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+            }
+
+            if (scoreboard) {
+                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
+                scoreboard.innerHTML = sorted.map(p => `
+                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
+                        <span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">
+                            ${p.id === user.uid ? '⭐ ' : ''}${p.name}
+                        </span>
+                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span>
+                    </div>
+                `).join('');
+            }
+        }
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              gameLog("--- Attempting Next Song ---", "warn");
