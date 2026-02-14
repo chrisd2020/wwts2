@@ -88,6 +88,9 @@
         let isFirebaseReady = false;
         let isHostFirstLoad = true;
 
+        // Helper to get consistent appId
+        const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
+
         // --- GAME STATE (Local Copy for Loop Logic) ---
         let localState = {
             players: [],
@@ -100,11 +103,9 @@
             timerInterval: null,
             currentTrackUri: null,
             isTestMode: false,
-            
-            // localAudioAnchor: Date.now() minus Spotify position in ms.
             localAudioAnchor: null, 
             isSpotifyPlaying: false,
-            localHasPaused: false // Prevents multiple pause triggers in a round
+            localHasPaused: false 
         };
 
         function getFirebaseConfig() {
@@ -136,7 +137,6 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 
-                // Auth Rule 3 Implementation
                 const initAuth = async () => {
                   if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -153,8 +153,7 @@
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         
                         if (savedRoomId) {
-                            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
-                            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
+                            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
                             const snap = await getDoc(roomRef);
                             
                             if (snap.exists()) {
@@ -223,11 +222,10 @@
             btn.disabled = true;
 
             const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             roomId = newRoomId;
             
             try {
-                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                 await setDoc(roomRef, {
                     hostId: user.uid,
                     status: 'lobby', 
@@ -256,7 +254,6 @@
             if(!isFirebaseReady) return alert("Connecting to server...");
             const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
             const name = document.getElementById('playerNameInput').value.trim();
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
@@ -266,7 +263,7 @@
             btn.disabled = true;
 
             try {
-                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${code}`);
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${code}`);
                 const snap = await getDoc(roomRef);
 
                 if(!snap.exists()) {
@@ -307,8 +304,7 @@
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${id}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
                 if(!doc.exists()) {
@@ -317,20 +313,6 @@
                 }
                 const data = doc.data();
                 
-                // --- ULTRA-FAST BUZZER TRIGGER ---
-                if (role === 'player' && data.status === 'playing' && data.hasCut) {
-                    const buzzBtn = document.getElementById('player-buzz-btn');
-                    if (buzzBtn && buzzBtn.disabled) {
-                        const me = data.players.find(p => p.id === user.uid);
-                        if (me && !me.buzzedAt) {
-                            buzzBtn.disabled = false;
-                            buzzBtn.innerText = "BUZZ!";
-                            buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                            if(navigator.vibrate) navigator.vibrate(200);
-                        }
-                    }
-                }
-
                 if (role === 'player') {
                     const isStillInRoom = (data.players || []).some(p => p.id === user.uid);
                     if (!isStillInRoom) {
@@ -344,7 +326,6 @@
                     window.hostResetRound(); 
                 }
 
-                // Update Local State tracking
                 localState.players = data.players || [];
                 const oldStatus = localState.status;
                 const oldTrackUri = localState.currentTrackUri;
@@ -357,7 +338,6 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
-                // --- ROBUST ANCHOR RESET ---
                 const songChanged = oldTrackUri !== localState.currentTrackUri;
                 const roundRestarted = (oldStatus !== 'playing' && localState.status === 'playing');
                 if (localState.status === 'lobby' || songChanged || roundRestarted) {
@@ -365,7 +345,6 @@
                     localState.localHasPaused = false;
                 }
 
-                // --- REMOTE AUDIO SYNC LOGIC ---
                 if (role === 'player' && playerInstance && localState.currentTrackUri) {
                     handlePlayerAudioSync(oldStatus, data.hasCut, oldTrackUri);
                 }
@@ -380,12 +359,10 @@
         async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
 
-            // Notice: We keep playing until we locally reach the cut time or the round ends
             const shouldPlayOnClient = (localState.status === 'playing' && (!localState.localHasPaused || localState.isTestMode));
 
             if (shouldPlayOnClient) {
                 const targetPosition = Math.max(0, Date.now() - localState.startTime);
-                
                 const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
                 
                 if (needsInitialPlay) {
@@ -574,14 +551,11 @@
                     audioElapsed = localState.pauseTime;
                 }
 
-                // Update Host Timer
                 const hostTimer = document.getElementById('gameTimer');
                 if (hostTimer) hostTimer.innerText = audioElapsed.toFixed(2);
-                
                 const hostProgress = document.getElementById('timeline-progress');
                 if (hostProgress) hostProgress.style.width = Math.min((audioElapsed/60)*100, 100) + '%';
 
-                // Update Player Timer
                 const playerTimer = document.getElementById('player-game-timer');
                 const playerProgress = document.getElementById('player-timeline-progress');
                 if (playerTimer || playerProgress) {
@@ -598,13 +572,9 @@
                      highlightClosest(audioElapsed);
                 }
                 
-                // --- LOCAL AUTO-CUT LOGIC ---
-                // Triggered individually on each device based on its unique audio position
                 if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
                     if (!localState.localHasPaused) {
                         localTriggerAudioCut();
-                        
-                        // If this is the host, also trigger the global state change for buzzing
                         if (roomId && !document.getElementById('host-screen').classList.contains('hidden') && !localState.hasCut) {
                             if (document.getElementById('autoCutToggle').checked) {
                                 window.hostTriggerCut();
@@ -621,7 +591,6 @@
         async function localTriggerAudioCut() {
             if (localState.localHasPaused) return;
             localState.localHasPaused = true;
-            
             if (localState.isTestMode) return;
 
             let vol = 0.8;
@@ -639,8 +608,7 @@
         
         window.selectPlaylist = async (uri, name, img) => {
              if(!deviceId) return alert("Player not ready.");
-             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
              document.getElementById('track-name').innerText = name;
              document.getElementById('artist-name').innerText = "Ready to Start";
@@ -648,8 +616,7 @@
         };
 
         window.hostStartRound = async () => {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
             const snap = await getDoc(roomRef);
             const data = snap.data();
@@ -689,32 +656,24 @@
         };
 
         window.hostTriggerCut = async () => {
-            const appId = typeof __app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { hasCut: true });
-            
-            // Note: Audio pause is now handled locally in the loop for all users
-            if (localState.role === 'host') {
-                localTriggerAudioCut();
-            }
+            localTriggerAudioCut();
         };
 
         window.toggleSyncTest = async (e) => {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { isTestMode: e.checked });
         };
 
         window.hostEndRound = async () => {
-             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
              await updateDoc(roomRef, { status: 'complete', pauseTime: audioTime });
         };
 
         window.hostToggleReveal = async () => {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             if (localState.status === 'revealing') {
                 const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : localState.pauseTime;
                 await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: audioTime });
@@ -736,8 +695,7 @@
         };
 
         window.hostResetRound = async () => {
-             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const snap = await getDoc(roomRef);
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
@@ -748,8 +706,7 @@
         };
 
         window.awardWin = async (pid) => {
-             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              try {
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
@@ -774,8 +731,7 @@
         };
 
         window.removePlayer = async (pid) => {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 const snap = await getDoc(roomRef);
                 if (snap.exists()) {
@@ -788,8 +744,7 @@
 
         window.playerLeave = async () => {
             if (!user || !roomId) return;
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 const snap = await getDoc(roomRef);
                 if (snap.exists()) {
@@ -822,11 +777,8 @@
             if (localState.isDragging) {
                 localState.isDragging = false;
                 const seconds = getScrubTime(e);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                 localState.localAudioAnchor = Date.now() - (seconds * 1000);
-
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                      await updateDoc(roomRef, { pauseTime: seconds });
                 } else if (localState.status === 'revealing') {
@@ -879,18 +831,6 @@
                 if (!localState.timerInterval) startLoop();
             }
 
-            if (data.status === 'playing' && data.hasCut) {
-                if (buzzBtn && buzzBtn.disabled) {
-                    const myData = data.players.find(p => p.id === user.uid);
-                    if (myData && !myData.buzzedAt) {
-                        buzzBtn.disabled = false;
-                        buzzBtn.innerText = "BUZZ!";
-                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                        if(navigator.vibrate) navigator.vibrate(200);
-                    }
-                }
-            }
-
             if (data.lastWinnerId === user.uid) {
                 winOverlay.classList.remove('hidden');
                 if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
@@ -905,10 +845,16 @@
                     buzzContainer.classList.remove('buzz-anim');
                     
                     const myData = data.players.find(p => p.id === user.uid);
-                    if (myData && myData.buzzedAt) {
+                    if (myData && myData.buzzedAt !== null) {
                         buzzBtn.innerText = "BUZZED!";
                         buzzBtn.disabled = true;
                         buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
+                    } else {
+                        // EXPLICITLY ENABLE BUTTON ON CLIENT
+                        buzzBtn.disabled = false;
+                        buzzBtn.innerText = "BUZZ!";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                        if(navigator.vibrate) navigator.vibrate(200);
                     }
                 } else {
                     statusEl.innerText = "LISTEN...";
@@ -916,7 +862,6 @@
                     buzzBtn.disabled = true;
                     buzzBtn.innerText = "LISTEN";
                     buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
-                    buzzContainer.classList.remove('buzz-anim');
                 }
             } else if (data.status === 'complete') {
                 statusEl.innerText = "Round Over";
@@ -952,8 +897,8 @@
             
             let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             
-            const roomRef = doc(db, 'artifacts', (typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
@@ -964,12 +909,10 @@
                     const myIndex = players.findIndex(p => p.id === user.uid);
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
                         players[myIndex].buzzedAt = elapsed; 
-                        
                         if (data.isTestMode) {
                             t.update(roomRef, { players });
                             return;
                         }
-
                         const allBuzzed = players.every(p => p.buzzedAt !== null);
                         if (allBuzzed) { t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); } else { t.update(roomRef, { players }); }
                     }
@@ -1018,11 +961,7 @@
                     const res = await fetch('https://accounts.spotify.com/api/token', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: new URLSearchParams({
-                            grant_type: 'refresh_token',
-                            refresh_token: refreshToken,
-                            client_id: clientId
-                        })
+                        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId })
                     });
                     const data = await res.json();
                     if (data.access_token) {
@@ -1044,7 +983,6 @@
                  hStatus.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
              }
              document.getElementById('auth-panel')?.classList.add('hidden');
-             
              const pStatus = document.getElementById('player-spotify-status');
              if(pStatus) {
                  pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked';
@@ -1107,7 +1045,6 @@
             playerInstance.addListener('ready', async ({ device_id }) => { 
                 deviceId = device_id; 
                 updateAuthUI(); 
-                
                 try {
                     const tokenToUse = await getValidToken();
                     await fetch('https://api.spotify.com/v1/me/player', {
@@ -1116,14 +1053,12 @@
                         body: JSON.stringify({ device_ids: [device_id], play: false })
                     });
                 } catch(e) { console.error("Transfer error:", e); }
-
                 if (document.getElementById('host-screen').classList.contains('hidden')) {
                     document.getElementById('player-audio-primer').classList.remove('hidden');
                 }
             });
 
             playerInstance.addListener('authentication_error', ({ message }) => {
-                console.error("Spotify Auth Error:", message);
                 const pStatus = document.getElementById('player-spotify-status');
                 if(pStatus) {
                     pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> Re-link Spotify';
@@ -1135,24 +1070,17 @@
             playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                
                 if (!state.paused) {
                     localState.localAudioAnchor = Date.now() - state.position;
                     localState.isSpotifyPlaying = true;
-                } else {
-                    localState.isSpotifyPlaying = false;
-                }
-
+                } else { localState.isSpotifyPlaying = false; }
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
-                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-                    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                    
+                    const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     if (localState.status !== 'lobby') {
                         document.getElementById('track-name').innerText = track.name;
                         document.getElementById('artist-name').innerText = track.artists[0].name;
                         document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
-
                     if (localState.currentTrackUri !== track.uri) {
                         await updateDoc(roomRef, { currentTrackUri: track.uri });
                     }
@@ -1171,8 +1099,7 @@
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
-             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
              const snap = await getDoc(roomRef);
              if(snap.exists()) {
@@ -1185,10 +1112,7 @@
         
         const searchInput = document.getElementById('search-input');
         const searchBtn = document.getElementById('search-btn');
-
-        searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') searchBtn.click();
-        });
+        searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchBtn.click(); });
 
         searchBtn.onclick = async () => {
             const query = searchInput.value;
@@ -1207,8 +1131,7 @@
                             <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
                             <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
                         </div>
-                    </div>
-                `}).join('');
+                    </div>`}).join('');
         };
 
         document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
@@ -1220,8 +1143,7 @@
         
         document.getElementById('cutTimeSlider').addEventListener('change', async (e) => {
             const val = parseInt(e.target.value);
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { autoCutTime: val });
         });
 
@@ -1231,44 +1153,33 @@
 
     <!-- LOBBY SCREEN -->
     <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
-        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2">
-            Win When They're Singing
-        </h1>
+        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2">Win When They're Singing</h1>
         <p class="text-gray-400 mb-8">Multiplayer Edition</p>
-        
         <div id="lobby-loading" class="text-center">
             <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
             <p class="text-gray-400">Connecting...</p>
         </div>
-
         <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-md space-y-5">
             <div class="space-y-3">
                 <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
                 <div class="flex gap-2">
                     <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
-                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold uppercase rounded-lg text-lg shadow-lg">
-                        Join Game
-                    </button>
+                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold uppercase rounded-lg text-lg shadow-lg">Join Game</button>
                 </div>
             </div>
-
             <div class="relative py-2">
                 <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div>
                 <div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-xs text-gray-500">OR</span></div>
             </div>
-
-            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">
-                Host New Game
-            </button>
+            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
         </div>
-
         <div id="lobby-setup" class="hidden text-center glass p-8 rounded-2xl w-full max-md">
             <textarea id="firebaseConfigInput" rows="4" class="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono mb-4" placeholder='Paste Firebase Config JSON...'></textarea>
             <button onclick="saveFirebaseConfig()" class="w-full bg-white text-black font-bold py-2 rounded">Save Config</button>
         </div>
     </div>
 
-    <!-- PLAYER SCREEN (Remote) -->
+    <!-- PLAYER SCREEN -->
     <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
         <div id="player-audio-primer" class="hidden fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md">
             <div class="text-4xl mb-4">🔊</div>
@@ -1276,28 +1187,18 @@
             <p class="text-sm text-gray-400 mb-6">Browsers require a tap to enable synchronized audio.</p>
             <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
         </div>
-
-        <div class="h-1 w-full bg-white/5 overflow-hidden">
-            <div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div>
-        </div>
-
+        <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left">
                 <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
                 <div id="player-name-display" class="font-bold text-white text-lg leading-none">---</div>
-                <div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold">
-                    <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host
-                </div>
+                <div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div>
             </div>
             <div class="flex items-center gap-3">
-                <div class="text-right">
-                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
-                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
-                </div>
+                <div class="text-right"><div class="text-[10px] text-gray-500 uppercase font-bold">Room</div><div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div></div>
                 <button onclick="playerLeave()" class="bg-red-600/20 hover:bg-red-600/40 text-red-500 text-[10px] font-bold px-3 py-1.5 rounded-full border border-red-500/30 transition uppercase tracking-wider">Leave</button>
             </div>
         </header>
-
         <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
             <div class="flex-1 pr-4">
                 <p class="text-[10px] font-bold text-green-400 leading-tight">Hear music on this device? (Spotify Premium)</p>
@@ -1305,43 +1206,29 @@
             </div>
             <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase shadow-lg">Link</button>
         </div>
-
         <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
             <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
                 <div class="text-8xl mb-4">🏆</div>
                 <h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter">YOU WON!</h2>
                 <p class="text-xl text-white font-bold">The host awarded you a point!</p>
                 <div class="mt-8 text-sm text-gray-400 animate-pulse">Waiting for next song...</div>
-                <div class="confetti" style="left: 10%; animation-delay: 0s;"></div>
-                <div class="confetti" style="left: 30%; animation-delay: 1s;"></div>
-                <div class="confetti" style="left: 50%; animation-delay: 0.5s;"></div>
-                <div class="confetti" style="left: 70%; animation-delay: 1.5s;"></div>
-                <div class="confetti" style="left: 90%; animation-delay: 0.2s;"></div>
+                <div class="confetti" style="left: 10%; animation-delay: 0s;"></div><div class="confetti" style="left: 30%; animation-delay: 1s;"></div><div class="confetti" style="left: 50%; animation-delay: 0.5s;"></div><div class="confetti" style="left: 70%; animation-delay: 1.5s;"></div><div class="confetti" style="left: 90%; animation-delay: 0.2s;"></div>
             </div>
-
-            <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
-                <div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div>
-            </div>
-            
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20"><div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div></div>
             <div id="player-status" class="text-xl text-gray-400 mb-2 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
-            
             <div class="mb-8 flex flex-col items-center z-10">
                 <div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div>
                 <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Spotify Audio Position</div>
             </div>
-
-            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">
-                WAIT
-            </button>
+            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">WAIT</button>
         </main>
-
         <section class="bg-black/40 backdrop-blur-lg p-4 border-t border-white/10 max-h-48 flex flex-col">
             <h3 class="text-[10px] uppercase font-black tracking-widest text-gray-500 mb-2">Live Scoreboard</h3>
             <div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div>
         </section>
     </div>
 
-    <!-- HOST SCREEN (Main Game) -->
+    <!-- HOST SCREEN -->
     <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[350px_1fr] gap-6 max-w-7xl mx-auto w-full h-full">
         <div class="flex flex-col gap-4 h-full overflow-hidden">
             <div class="glass p-4 rounded-xl">
@@ -1355,30 +1242,20 @@
                 <div id="auth-panel">
                      <button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded">Spotify Login</button>
                      <input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
-                     <div id="redirectUriDisplay" class="hidden"></div>
                 </div>
                 <div class="flex flex-col gap-3 border-t border-white/10 pt-4">
                     <div class="flex justify-between items-center"><label class="text-xs font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div>
                     <div class="flex justify-between items-center"><label class="text-xs font-bold uppercase text-yellow-500">Sync Test Mode</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div>
                 </div>
-                
-                <div class="space-y-1 pt-2 border-t border-white/5">
-                    <p class="text-[10px] text-gray-500 leading-tight">Players compete on their individual Spotify position. Clocks start when their song actually starts.</p>
-                </div>
-
                 <div class="space-y-1">
                     <div class="flex justify-between text-xs text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div>
                     <input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 </div>
             </div>
-            <div class="glass p-4 rounded-xl flex flex-col h-40">
-                <h3 class="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-2">Live Standings</h3>
-                <div id="host-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div>
-            </div>
+            <div class="glass p-4 rounded-xl flex flex-col h-40"><div id="host-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div></div>
             <div class="glass p-4 rounded-xl flex-1 flex flex-col min-h-0">
                 <div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button></div>
-                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll"><div class="text-gray-500 text-xs text-center mt-4">Results appear here...</div></div>
-                <div class="pt-2 border-t border-white/5 mt-2"><button onclick="logout()" class="text-[10px] text-red-400 underline">Logout & Reset</button></div>
+                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll"></div>
             </div>
         </div>
         <div class="flex flex-col gap-4 h-full overflow-hidden relative">
@@ -1386,7 +1263,6 @@
                 <div class="flex gap-6 items-center relative z-10">
                     <div id="album-art" class="w-24 h-24 bg-black/40 rounded-lg flex items-center justify-center text-4xl shadow-lg shrink-0 overflow-hidden">🎵</div>
                     <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2 mb-1"><span class="text-xs text-yellow-500 font-bold uppercase tracking-widest">Current Track</span><span id="round-status" class="text-[10px] bg-white/10 px-2 py-0.5 rounded text-gray-300">Idle</span></div>
                         <h2 id="track-name" class="text-3xl font-black leading-tight truncate">Waiting...</h2>
                         <p id="artist-name" class="text-xl text-gray-400 truncate">---</p>
                     </div>
@@ -1398,19 +1274,15 @@
                 <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
                     <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-xl opacity-80 pointer-events-none transition-all duration-75"></div>
                     <div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div>
-                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 z-0 transition-all duration-300 pointer-events-none" style="left: 16%;">
-                        <div class="absolute -top-4 -translate-x-1/2 text-[10px] text-red-400 font-bold">CUT</div>
-                    </div>
+                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 z-0 transition-all duration-300 pointer-events-none" style="left: 16%;"></div>
                 </div>
             </div>
             <div class="grid grid-cols-3 gap-4">
                 <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">▶ Start Round</button>
                 <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">⏭ Next Song</button>
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
             </div>
-            <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll">
-                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4"></div>
-            </div>
+            <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4"></div></div>
         </div>
     </div>
 </body>
