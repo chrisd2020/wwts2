@@ -160,18 +160,29 @@
                                 const data = snap.data();
                                 if (data.hostId === user.uid) {
                                     roomId = savedRoomId;
-                                    document.getElementById('lobby-screen').classList.add('hidden');
-                                    document.getElementById('host-screen').classList.remove('hidden');
-                                    document.getElementById('roomCodeDisplay').innerText = roomId;
+                                    const lobby = document.getElementById('lobby-screen');
+                                    const host = document.getElementById('host-screen');
+                                    const codeDisplay = document.getElementById('roomCodeDisplay');
+                                    
+                                    if(lobby) lobby.classList.add('hidden');
+                                    if(host) host.classList.remove('hidden');
+                                    if(codeDisplay) codeDisplay.innerText = roomId;
+                                    
                                     subscribeToRoom(roomId, 'host');
                                 } else {
                                     const me = (data.players || []).find(p => p.id === user.uid);
                                     if (me) {
                                         roomId = savedRoomId;
-                                        document.getElementById('lobby-screen').classList.add('hidden');
-                                        document.getElementById('player-screen').classList.remove('hidden');
-                                        document.getElementById('player-room-code').innerText = roomId;
-                                        document.getElementById('player-name-display').innerText = me.name;
+                                        const lobby = document.getElementById('lobby-screen');
+                                        const player = document.getElementById('player-screen');
+                                        const pCode = document.getElementById('player-room-code');
+                                        const pName = document.getElementById('player-name-display');
+                                        
+                                        if(lobby) lobby.classList.add('hidden');
+                                        if(player) player.classList.remove('hidden');
+                                        if(pCode) pCode.innerText = roomId;
+                                        if(pName) pName.innerText = me.name;
+                                        
                                         subscribeToRoom(roomId, 'player');
                                     } else {
                                         localStorage.removeItem('wwts_active_room_id');
@@ -195,9 +206,12 @@
         }
 
         function showMainLobby() {
-            document.getElementById('lobby-loading').classList.add('hidden');
-            document.getElementById('lobby-setup').classList.add('hidden');
-            document.getElementById('lobby-main').classList.remove('hidden');
+            const loading = document.getElementById('lobby-loading');
+            const setup = document.getElementById('lobby-setup');
+            const main = document.getElementById('lobby-main');
+            if(loading) loading.classList.add('hidden');
+            if(setup) setup.classList.add('hidden');
+            if(main) main.classList.remove('hidden');
         }
 
         initFirebase();
@@ -393,9 +407,12 @@
             unsubscribeRoom = null;
             roomId = null;
             localStorage.removeItem('wwts_active_room_id');
-            document.getElementById('player-screen').classList.add('hidden');
-            document.getElementById('host-screen').classList.add('hidden');
-            document.getElementById('lobby-screen').classList.remove('hidden');
+            const playerScreen = document.getElementById('player-screen');
+            const hostScreen = document.getElementById('host-screen');
+            const lobbyScreen = document.getElementById('lobby-screen');
+            if(playerScreen) playerScreen.classList.add('hidden');
+            if(hostScreen) hostScreen.classList.add('hidden');
+            if(lobbyScreen) lobbyScreen.classList.remove('hidden');
             if (playerInstance) playerInstance.disconnect();
             showMainLobby();
         }
@@ -403,23 +420,30 @@
         // --- HOST LOGIC ---
         
         function updateHostUI(data) {
+            // Guard against snapshots firing while UI components are unmounted or still loading
+            const cutDisplay = document.getElementById('cutTimeDisplay');
+            const cutSlider = document.getElementById('cutTimeSlider');
+            const cutMarker = document.getElementById('cut-marker');
+            const startBtn = document.getElementById('startRoundBtn');
+            const revealBtn = document.getElementById('revealBtn');
+            const roundStatus = document.getElementById('round-status');
+            const timelineContainer = document.getElementById('timeline-container');
+            const hostScoreboard = document.getElementById('host-scoreboard');
+
+            // Render players (this function has its own internal guards)
             renderHostPlayers(data);
             
-            if(document.activeElement !== document.getElementById('cutTimeSlider')) {
-                document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
-                document.getElementById('cutTimeSlider').value = data.autoCutTime;
-                const cutPos = (data.autoCutTime / 60) * 100;
-                document.getElementById('cut-marker').style.left = `${cutPos}%`;
+            if (cutDisplay && cutSlider && document.activeElement !== cutSlider) {
+                cutDisplay.innerText = data.autoCutTime + 's';
+                cutSlider.value = data.autoCutTime;
+                if (cutMarker) {
+                    const cutPos = (data.autoCutTime / 60) * 100;
+                    cutMarker.style.left = `${cutPos}%`;
+                }
             }
 
             const testToggle = document.getElementById('syncTestToggle');
             if (testToggle) testToggle.checked = data.isTestMode || false;
-
-            const roundStatus = document.getElementById('round-status');
-            const startBtn = document.getElementById('startRoundBtn');
-            const revealBtn = document.getElementById('revealBtn');
-            const timelineContainer = document.getElementById('timeline-container');
-            const hostScoreboard = document.getElementById('host-scoreboard');
 
             if (hostScoreboard) {
                 const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
@@ -434,76 +458,86 @@
             }
 
             if (data.status === 'lobby' && data.queuedPlaylist) {
-                document.getElementById('track-name').innerText = data.queuedPlaylist.name;
-                document.getElementById('artist-name').innerText = "Ready to Start";
-                document.getElementById('album-art').innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
+                const trkName = document.getElementById('track-name');
+                const artName = document.getElementById('artist-name');
+                const albArt = document.getElementById('album-art');
+                if(trkName) trkName.innerText = data.queuedPlaylist.name;
+                if(artName) artName.innerText = "Ready to Start";
+                if(albArt) albArt.innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
             }
             
+            // Only proceed with specific button updates if elements exist
+            if (!startBtn || !revealBtn || !roundStatus) return;
+
             if (data.status === 'playing') {
                 if (!localState.timerInterval) startLoop();
-                timelineContainer.classList.remove('interactive');
+                if(timelineContainer) timelineContainer.classList.remove('interactive');
                 revealBtn.disabled = true; 
                 revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
+                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl w-full";
 
                 if (data.hasCut) {
                     roundStatus.innerText = "Music Cut";
                     startBtn.innerText = "Force End Round"; 
-                    startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
+                    startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                     startBtn.onclick = () => window.hostEndRound();
                 } else {
                     roundStatus.innerText = "Playing";
                     startBtn.innerText = "Force Cut";
-                    startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
+                    startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                     startBtn.onclick = () => window.hostTriggerCut();
                 }
             } else if (data.status === 'complete') {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 roundStatus.innerText = "Guesses In";
                 startBtn.innerText = "Reset Round";
-                startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
+                startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                 startBtn.onclick = () => window.hostResetRound();
                 
                 revealBtn.disabled = false;
                 revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1 w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                timelineContainer.classList.add('interactive');
+                if(timelineContainer) timelineContainer.classList.add('interactive');
             } else if (data.status === 'revealing') {
                 if(!localState.timerInterval) startLoop();
                 roundStatus.innerText = "Revealing";
                 revealBtn.disabled = false;
                 revealBtn.innerText = "⏸ Pause Reveal";
-                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
+                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow active:translate-y-1 w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                timelineContainer.classList.add('interactive');
+                if(timelineContainer) timelineContainer.classList.add('interactive');
             } else if (data.status === 'paused_reveal') {
                 if(!localState.timerInterval) startLoop();
                 roundStatus.innerText = "Paused";
                 revealBtn.disabled = false;
                 revealBtn.innerText = "▶ Resume Reveal";
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1 w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                timelineContainer.classList.add('interactive');
+                if(timelineContainer) timelineContainer.classList.add('interactive');
             } else {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 roundStatus.innerText = "Idle";
                 startBtn.innerText = "▶ Start Round";
-                startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
+                startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                 startBtn.onclick = () => window.hostStartRound();
                 
                 revealBtn.disabled = true;
                 revealBtn.innerText = "🔊 Reveal Music";
-                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
-                timelineContainer.classList.remove('interactive');
-                document.getElementById('gameTimer').innerText = "0.00";
-                document.getElementById('timeline-progress').style.width = "0%";
+                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl w-full";
+                if(timelineContainer) timelineContainer.classList.remove('interactive');
+                const gTimer = document.getElementById('gameTimer');
+                const tProgress = document.getElementById('timeline-progress');
+                if(gTimer) gTimer.innerText = "0.00";
+                if(tProgress) tProgress.style.width = "0%";
             }
         }
 
         function renderHostPlayers(data) {
             const grid = document.getElementById('playerGrid');
             const markersContainer = document.getElementById('timeline-markers');
+            if (!grid || !markersContainer) return;
+            
             markersContainer.innerHTML = ''; 
 
             const players = data.players || [];
@@ -584,8 +618,10 @@
                 if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
                     if (!localState.localHasPaused) {
                         localTriggerAudioCut();
-                        if (roomId && !document.getElementById('host-screen').classList.contains('hidden') && !localState.hasCut) {
-                            if (document.getElementById('autoCutToggle').checked) {
+                        const hScreen = document.getElementById('host-screen');
+                        if (roomId && hScreen && !hScreen.classList.contains('hidden') && !localState.hasCut) {
+                            const cutCheck = document.getElementById('autoCutToggle');
+                            if (cutCheck && cutCheck.checked) {
                                 window.hostTriggerCut();
                             }
                         }
@@ -619,14 +655,18 @@
              if(!deviceId) return alert("Player not ready.");
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
-             document.getElementById('track-name').innerText = name;
-             document.getElementById('artist-name').innerText = "Ready to Start";
-             document.getElementById('album-art').innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
+             const tName = document.getElementById('track-name');
+             const aName = document.getElementById('artist-name');
+             const aArt = document.getElementById('album-art');
+             if(tName) tName.innerText = name;
+             if(aName) aName.innerText = "Ready to Start";
+             if(aArt) aArt.innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
         };
 
         window.hostStartRound = async () => {
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
+            const slider = document.getElementById('cutTimeSlider');
+            const cutTime = slider ? parseInt(slider.value) : 10;
             const snap = await getDoc(roomRef);
             if (!snap.exists()) return;
             const data = snap.data();
@@ -771,17 +811,20 @@
         // --- SCRUBBING LOGIC ---
         const timeline = document.getElementById('timeline-container');
         function getScrubTime(e) {
+            if (!timeline) return 0;
             const rect = timeline.getBoundingClientRect();
             let x = e.clientX - rect.left;
             x = Math.max(0, Math.min(x, rect.width));
             const pct = x / rect.width;
             return pct * 60; 
         }
-        timeline.addEventListener('mousedown', (e) => {
-            if (!timeline.classList.contains('interactive')) return;
-            localState.isDragging = true;
-            handleScrub(e);
-        });
+        if(timeline) {
+            timeline.addEventListener('mousedown', (e) => {
+                if (!timeline.classList.contains('interactive')) return;
+                localState.isDragging = true;
+                handleScrub(e);
+            });
+        }
         window.addEventListener('mousemove', (e) => {
             if (localState.isDragging) handleScrub(e);
         });
@@ -801,8 +844,10 @@
         });
         function handleScrub(e) {
             const seconds = getScrubTime(e);
-            document.getElementById('gameTimer').innerText = seconds.toFixed(2);
-            document.getElementById('timeline-progress').style.width = ((seconds/60)*100) + '%';
+            const gTimer = document.getElementById('gameTimer');
+            const tProgress = document.getElementById('timeline-progress');
+            if(gTimer) gTimer.innerText = seconds.toFixed(2);
+            if(tProgress) tProgress.style.width = ((seconds/60)*100) + '%';
             highlightClosest(seconds);
         }
         function highlightClosest(elapsed) {
@@ -844,17 +889,20 @@
             }
 
             if (data.lastWinnerId === user.uid) {
-                winOverlay.classList.remove('hidden');
+                if(winOverlay) winOverlay.classList.remove('hidden');
                 if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
             } else {
-                winOverlay.classList.add('hidden');
+                if(winOverlay) winOverlay.classList.add('hidden');
             }
+
+            // Only proceed if core player elements are found
+            if (!statusEl || !buzzBtn) return;
 
             if (data.status === 'playing') {
                 if (data.hasCut) {
                     statusEl.innerText = data.isTestMode ? "TEST SYNC..." : "SING!";
                     statusEl.className = data.isTestMode ? "text-2xl font-bold text-yellow-400" : "text-4xl font-black text-red-500";
-                    buzzContainer.classList.remove('buzz-anim');
+                    if(buzzContainer) buzzContainer.classList.remove('buzz-anim');
                     
                     const myData = data.players.find(p => p.id === user.uid);
                     if (myData && myData.buzzedAt !== null) {
@@ -904,7 +952,7 @@
         window.playerBuzz = async () => {
             if(!roomId || !user) return;
             const btn = document.getElementById('player-buzz-btn');
-            btn.innerText = "SENDING...";
+            if(btn) btn.innerText = "SENDING...";
             
             let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
@@ -928,7 +976,7 @@
                         if (allBuzzed) { t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); } else { t.update(roomRef, { players }); }
                     }
                 });
-            } catch(e) { console.error("Buzz failed", e); btn.innerText = "RETRY"; }
+            } catch(e) { console.error("Buzz failed", e); if(btn) btn.innerText = "RETRY"; }
         };
 
         // --- SPOTIFY AUTH & PLAYER ---
@@ -993,18 +1041,22 @@
                  hStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
                  hStatus.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
              }
-             document.getElementById('auth-panel')?.classList.add('hidden');
+             const authPanel = document.getElementById('auth-panel');
+             if(authPanel) authPanel.classList.add('hidden');
+             
              const pStatus = document.getElementById('player-spotify-status');
              if(pStatus) {
                  pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked';
                  pStatus.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20';
              }
-             document.getElementById('player-spotify-auth')?.classList.add('hidden');
+             const pAuth = document.getElementById('player-spotify-auth');
+             if(pAuth) pAuth.classList.add('hidden');
         }
 
         window.startLogin = async (isPlayerLogin = false) => {
             const inputId = isPlayerLogin ? 'playerClientIdInput' : 'clientIdInput';
-            const clientId = document.getElementById(inputId).value.trim();
+            const clientIdInput = document.getElementById(inputId);
+            const clientId = clientIdInput ? clientIdInput.value.trim() : null;
             if(!clientId) return alert("Enter Client ID");
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             const verifier = generateRandomString(128);
@@ -1064,8 +1116,11 @@
                         body: JSON.stringify({ device_ids: [device_id], play: false })
                     });
                 } catch(e) { console.error("Transfer error:", e); }
-                if (document.getElementById('host-screen').classList.contains('hidden')) {
-                    document.getElementById('player-audio-primer').classList.remove('hidden');
+                
+                const hScreen = document.getElementById('host-screen');
+                if (hScreen && hScreen.classList.contains('hidden')) {
+                    const primer = document.getElementById('player-audio-primer');
+                    if(primer) primer.classList.remove('hidden');
                 }
             });
 
@@ -1074,7 +1129,8 @@
                 if(pStatus) {
                     pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> Re-link Spotify';
                     pStatus.className = 'flex items-center gap-2 text-[10px] text-red-400 font-bold bg-red-500/10 px-3 py-1 rounded-full border border-red-500/20';
-                    document.getElementById('player-spotify-auth')?.classList.remove('hidden');
+                    const pAuth = document.getElementById('player-spotify-auth');
+                    if(pAuth) pAuth.classList.remove('hidden');
                 }
             });
             
@@ -1085,12 +1141,17 @@
                     localState.localAudioAnchor = Date.now() - state.position;
                     localState.isSpotifyPlaying = true;
                 } else { localState.isSpotifyPlaying = false; }
-                if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
+                
+                const hScreen = document.getElementById('host-screen');
+                if (roomId && hScreen && !hScreen.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     if (localState.status !== 'lobby') {
-                        document.getElementById('track-name').innerText = track.name;
-                        document.getElementById('artist-name').innerText = track.artists[0].name;
-                        document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                        const tName = document.getElementById('track-name');
+                        const aName = document.getElementById('artist-name');
+                        const aArt = document.getElementById('album-art');
+                        if(tName) tName.innerText = track.name;
+                        if(aName) aName.innerText = track.artists[0].name;
+                        if(aArt) aArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
                     if (localState.currentTrackUri !== track.uri) {
                         await updateDoc(roomRef, { currentTrackUri: track.uri });
@@ -1103,7 +1164,8 @@
         window.primeAudio = async () => {
             if (playerInstance) {
                 await playerInstance.activateElement();
-                document.getElementById('player-audio-primer').classList.add('hidden');
+                const primer = document.getElementById('player-audio-primer');
+                if(primer) primer.classList.add('hidden');
                 handlePlayerAudioSync('idle', false, null);
             }
         };
@@ -1115,7 +1177,8 @@
                 await playerInstance.nextTrack(); 
              }
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
+             const slider = document.getElementById('cutTimeSlider');
+             const cutTime = slider ? parseInt(slider.value) : 10;
              const snap = await getDoc(roomRef);
              if(snap.exists()) {
                  const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
@@ -1127,40 +1190,52 @@
         
         const searchInput = document.getElementById('search-input');
         const searchBtn = document.getElementById('search-btn');
-        searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchBtn.click(); });
+        if(searchInput) searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchBtn.click(); });
 
-        searchBtn.onclick = async () => {
-            const query = searchInput.value;
-            const tokenToUse = await getValidToken();
-            if(!tokenToUse) return alert("Log in first");
-            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${tokenToUse}` } });
-            const data = await res.json();
-            if (!data.playlists || !data.playlists.items) { document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>'; return; }
-            document.getElementById('results').innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
-                    const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
-                    const safeName = p.name.replace(/'/g, "\\'"); 
-                    return `
-                    <div onclick="selectPlaylist('${p.uri}', '${safeName}', '${imgUrl}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
-                        <img src="${imgUrl}" class="w-10 h-10 rounded shadow object-cover">
-                        <div class="min-w-0">
-                            <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
-                            <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
-                        </div>
-                    </div>`}).join('');
-        };
+        if(searchBtn) {
+            searchBtn.onclick = async () => {
+                const query = searchInput.value;
+                const tokenToUse = await getValidToken();
+                if(!tokenToUse) return alert("Log in first");
+                const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${tokenToUse}` } });
+                const data = await res.json();
+                const results = document.getElementById('results');
+                if (!data.playlists || !data.playlists.items) { if(results) results.innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>'; return; }
+                if(results) {
+                    results.innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
+                        const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
+                        const safeName = p.name.replace(/'/g, "\\'"); 
+                        return `
+                        <div onclick="selectPlaylist('${p.uri}', '${safeName}', '${imgUrl}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
+                            <img src="${imgUrl}" class="w-10 h-10 rounded shadow object-cover">
+                            <div class="min-w-0">
+                                <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
+                                <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
+                            </div>
+                        </div>`}).join('');
+                }
+            };
+        }
 
-        document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
-             const val = e.target.value;
-             document.getElementById('cutTimeDisplay').innerText = val + 's';
-             const pos = (val / 60) * 100;
-             document.getElementById('cut-marker').style.left = `${pos}%`;
-        });
-        
-        document.getElementById('cutTimeSlider').addEventListener('change', async (e) => {
-            const val = parseInt(e.target.value);
-            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await updateDoc(roomRef, { autoCutTime: val });
-        });
+        const hSlider = document.getElementById('cutTimeSlider');
+        if(hSlider) {
+            hSlider.addEventListener('input', (e) => {
+                 const val = e.target.value;
+                 const cDisp = document.getElementById('cutTimeDisplay');
+                 const cMarker = document.getElementById('cut-marker');
+                 if(cDisp) cDisp.innerText = val + 's';
+                 if(cMarker) {
+                    const pos = (val / 60) * 100;
+                    cMarker.style.left = `${pos}%`;
+                 }
+            });
+            
+            hSlider.addEventListener('change', async (e) => {
+                const val = parseInt(e.target.value);
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                await updateDoc(roomRef, { autoCutTime: val });
+            });
+        }
 
     </script>
 </head>
