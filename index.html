@@ -481,6 +481,13 @@
             const hostScoreboard = document.getElementById('host-scoreboard');
 
             renderHostPlayers(data);
+
+            // Re-apply highlights immediately after rendering players to prevent flicker
+            const audioElapsed = localState.isDragging ? localState.pauseTime : 
+                (localState.localAudioAnchor !== null ? (getServerTime() - localState.localAudioAnchor) / 1000 : localState.pauseTime);
+            if (data.status === 'revealing' || data.status === 'paused_reveal' || data.status === 'complete') {
+                highlightClosest(audioElapsed);
+            }
             
             if (cutDisplay && cutSlider && document.activeElement !== cutSlider) {
                 cutDisplay.innerText = data.autoCutTime + 's';
@@ -874,6 +881,9 @@
             if(timer) timer.innerText = seekTime.toFixed(2);
             const prog = document.getElementById('timeline-progress');
             if(prog) prog.style.width = (offsetX/rect.width*100) + '%';
+            
+            // Force highlight update during scrub
+            highlightClosest(seekTime);
         };
 
         timelineContainer.onmousedown = (e) => {
