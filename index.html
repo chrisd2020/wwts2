@@ -69,6 +69,7 @@
         let roomId = null;
         let unsubscribeRoom = null;
         let isFirebaseReady = false;
+        let isHostFirstLoad = true;
 
         // --- GAME STATE (Local Copy for Loop Logic) ---
         let localState = {
@@ -186,7 +187,8 @@
                     autoCutTime: 10,
                     startTime: 0,
                     pauseTime: 0,
-                    hasCut: false
+                    hasCut: false,
+                    queuedPlaylist: null
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -257,6 +259,13 @@
                     }
                 }
 
+                // --- HOST REFRESH SYNC ---
+                if (role === 'host' && isHostFirstLoad) {
+                    isHostFirstLoad = false;
+                    // Reset room status to lobby on refresh to stop playback/rounds
+                    window.hostResetRound(); 
+                }
+
                 // --- UPDATE LOCAL STATE ---
                 localState.players = data.players || [];
                 localState.status = data.status;
@@ -287,6 +296,13 @@
             const startBtn = document.getElementById('startRoundBtn');
             const revealBtn = document.getElementById('revealBtn');
             const timelineContainer = document.getElementById('timeline-container');
+
+            // Handle persistence of queued playlist view on refresh
+            if (data.status === 'lobby' && data.queuedPlaylist) {
+                document.getElementById('track-name').innerText = data.queuedPlaylist.name;
+                document.getElementById('artist-name').innerText = "Ready to Start";
+                document.getElementById('album-art').innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
+            }
 
             // --- STATUS HANDLING ---
             
@@ -440,14 +456,17 @@
 
         // --- HOST ACTIONS ---
         
-        // New: Track Selection State
-        let selectedPlaylistUri = null;
-
-        window.selectPlaylist = (uri, name, img) => {
+        window.selectPlaylist = async (uri, name, img) => {
              if(!deviceId) return alert("Player not ready.");
-             selectedPlaylistUri = uri;
+             const appId = window.__app_id || 'wwts-game'; 
+             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              
-             // Visual Feedback without playing
+             // Persist the selection to Firestore so refresh doesn't lose it
+             await updateDoc(roomRef, { 
+                queuedPlaylist: { uri, name, img } 
+             });
+             
+             // Instant Visual Feedback
              document.getElementById('track-name').innerText = name;
              document.getElementById('artist-name').innerText = "Ready to Start";
              document.getElementById('album-art').innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
@@ -459,7 +478,8 @@
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
             
             const snap = await getDoc(roomRef);
-            const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
+            const data = snap.data();
+            const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
 
             await updateDoc(roomRef, {
                 status: 'playing',
@@ -467,19 +487,19 @@
                 startTime: Date.now(),
                 pauseTime: 0,
                 autoCutTime: cutTime,
-                players: cleanPlayers
+                players: cleanPlayers,
+                queuedPlaylist: null // Clear the queue since we are starting
             });
 
             if(player) {
                 await player.setVolume(0.8);
                 
-                if (selectedPlaylistUri) {
+                if (data.queuedPlaylist) {
                     // Start the queued playlist
                     await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                         method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ context_uri: selectedPlaylistUri })
+                        body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                     });
-                    selectedPlaylistUri = null; // Clear queue
                 } else {
                     // Just resume/restart current
                     await player.seek(0);
@@ -853,14 +873,19 @@
                 deviceId = device_id;
                 console.log('Ready with Device ID', device_id);
                 updateAuthUI();
+                // Ensure player is paused on first load
+                player.pause();
             });
 
             player.addListener('player_state_changed', state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                document.getElementById('track-name').innerText = track.name;
-                document.getElementById('artist-name').innerText = track.artists[0].name;
-                document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                // Only update metadata if not in a queued "Ready to Start" state
+                if (localState.status !== 'lobby') {
+                    document.getElementById('track-name').innerText = track.name;
+                    document.getElementById('artist-name').innerText = track.artists[0].name;
+                    document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                }
             });
             player.connect();
         }
@@ -887,7 +912,8 @@
                     startTime: Date.now(),
                     pauseTime: 0,
                     autoCutTime: cutTime,
-                    players: cleanPlayers
+                    players: cleanPlayers,
+                    queuedPlaylist: null
                  });
              }
         };
@@ -923,18 +949,14 @@
                 `}).join('');
         };
 
-        // Old playPlaylist function replaced by selectPlaylist above
-
         // Settings Toggles
         document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
-             // For visual feedback only before saving to DB
              const val = e.target.value;
              document.getElementById('cutTimeDisplay').innerText = val + 's';
              const pos = (val / 60) * 100;
              document.getElementById('cut-marker').style.left = `${pos}%`;
         });
         
-        // Commit slider value to DB on change (mouseup)
         document.getElementById('cutTimeSlider').addEventListener('change', async (e) => {
             const val = parseInt(e.target.value);
             const appId = window.__app_id || 'wwts-game'; 
@@ -946,7 +968,7 @@
 </head>
 <body class="p-4 h-screen overflow-hidden flex flex-col">
 
-    <!-- LOBBY SCREEN (Replaced Login Style) -->
+    <!-- LOBBY SCREEN -->
     <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
         <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2">
             Win When They're Singing
@@ -1033,7 +1055,6 @@
             <!-- Settings -->
             <div class="glass p-4 rounded-xl space-y-4">
                 <div id="auth-panel">
-                     <!-- Login happens here if needed -->
                      <button onclick="startLogin()" class="w-full bg-spotify text-black font-bold text-xs py-2 rounded">Spotify Login</button>
                      <input id="clientIdInput" class="w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
                      <div id="redirectUriDisplay" class="hidden"></div>
