@@ -25,14 +25,13 @@
 
         .timeline-marker {
             position: absolute; top: -5px; bottom: -5px; width: 2px; background: white; z-index: 10;
-            /* Removed transitions on height and top to prevent visual "dipping" during scrubs/re-renders */
-            transition: left 0.2s, background-color 0.1s; pointer-events: none;
+            transition: left 0.2s; pointer-events: none; /* Removed background-color transition to stop flashing */
         }
         .timeline-avatar {
             position: absolute; top: -28px; transform: translateX(-50%);
             font-size: 11px; white-space: nowrap; background: white; color: black;
             padding: 2px 6px; border-radius: 4px; font-weight: bold;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.5); transition: background-color 0.1s, transform 0.1s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5); transition: background-color 0.1s;
         }
         .timeline-avatar::after {
             content: ''; position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%);
@@ -603,7 +602,11 @@
             markers.forEach(m => {
                 const avatar = m.querySelector('.timeline-avatar');
                 if (!avatar) return;
-                const pTime = parseFloat(avatar.innerText.split(' ')[1] || "999");
+                // ROBUST FIX: Use dataset time instead of parsing innerText which fails on names with spaces
+                const pTime = parseFloat(m.dataset.time);
+                
+                if (isNaN(pTime)) return;
+
                 const diff = Math.abs(audioElapsed - pTime);
                 if (diff < minDiff) {
                     minDiff = diff;
@@ -634,6 +637,7 @@
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
                     marker.id = `marker-${p.id}`; 
+                    marker.dataset.time = p.buzzedAt; // Store time reliably for highlight logic
                     marker.className = 'timeline-marker bg-white';
                     marker.style.left = `${pos}%`;
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name} ${p.buzzedAt.toFixed(2)}s</div>`;
