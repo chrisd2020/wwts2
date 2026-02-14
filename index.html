@@ -101,8 +101,8 @@
             currentTrackUri: null,
             isTestMode: false,
             
-            // localAudioAnchor: Accurate Date.now() when song hits 0ms.
-            // This is updated continuously from Spotify SDK state for perfect sync.
+            // localAudioAnchor: Date.now() minus Spotify position in ms.
+            // Result is: (Date.now() - localAudioAnchor) / 1000 = current position in seconds.
             localAudioAnchor: null, 
             isSpotifyPlaying: false
         };
@@ -549,14 +549,11 @@
                     return; 
                 }
                 
-                // --- ACCURATE AUDIO-SYNCED ELAPSED TIME ---
-                // We use localAudioAnchor which is tied to actual Spotify progress.
+                // Audio-Synced elapsed time for BOTH host and player.
+                // It stays at 0.00 until Spotify reports starting.
                 let audioElapsed = 0;
-                if (localState.localAudioAnchor) {
+                if (localState.localAudioAnchor !== null) {
                     audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
-                } else {
-                    // Stay at 0 until Spotify provides an anchor
-                    audioElapsed = 0;
                 }
 
                 // If round is complete or paused, we freeze at the final pause time
@@ -588,6 +585,7 @@
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(audioElapsed);
                 }
+                
                 // Host triggers Auto-Cut based on EXACT audio position
                 if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && audioElapsed >= localState.autoCutTime) {
                     window.hostTriggerCut();
@@ -617,7 +615,7 @@
             const data = snap.data();
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
 
-            // Reset local anchor for fresh count
+            // Clear anchor so timer stays at 0.00 until music actually hits speakers
             localState.localAudioAnchor = null;
 
             await updateDoc(roomRef, {
@@ -676,7 +674,6 @@
         window.hostEndRound = async () => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             // Use accurate audio time for end round marker
              const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
              await updateDoc(roomRef, { status: 'complete', pauseTime: audioTime });
         };
@@ -695,7 +692,6 @@
                 } else {
                     startOffset = 0;
                 }
-                // When starting reveal, we update global startTime to let clients know target position
                 await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - startOffset });
                 if(playerInstance) {
                     await playerInstance.setVolume(0.8);
@@ -919,7 +915,7 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // USE ACCURATE AUDIO-SYNCED POSITION
+            // Consistent access to the sync anchor
             let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
             
@@ -1052,15 +1048,15 @@
                 if (!state) return;
                 const track = state.track_window.current_track;
                 
-                // TRACK AUDIO START ANCHOR
-                // If the player is active, we update the anchor so Timer = Date.now() - anchor matches exactly the song position.
+                // CONTINUOUS AUDIO ANCHOR UPDATE
+                // We update the anchor while the song is playing to stay perfectly locked to Spotify.
                 if (!state.paused) {
                     localState.localAudioAnchor = Date.now() - state.position;
                     localState.isSpotifyPlaying = true;
                 } else {
                     localState.isSpotifyPlaying = false;
-                    // Note: If paused (the CUT), we do NOT reset the anchor.
-                    // This allows the clock to continue counting naturally based on the original audio start.
+                    // Note: If paused (the CUT), we do NOT clear the anchor.
+                    // This allows the clock to continue counting naturally based on where the audio stopped.
                 }
 
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
