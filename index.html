@@ -726,24 +726,29 @@
 
         // --- PLAYER UI ---
         function updatePlayerUI(data) {
-            const statusEl = document.getElementById('player-status');
             const buzzBtn = document.getElementById('player-buzz-btn');
+            const statusEl = document.getElementById('player-status');
             const buzzContainer = document.getElementById('buzz-container');
             const scoreboard = document.getElementById('player-scoreboard');
             const winOverlay = document.getElementById('win-overlay');
 
-            if (scoreboard) {
-                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
-                scoreboard.innerHTML = sorted.map(p => `
-                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
-                        <span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">
-                            ${p.id === user.uid ? '⭐ ' : ''}${p.name}
-                        </span>
-                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span>
-                    </div>
-                `).join('');
+            // --- 1. PRIORITIZE COMPETITIVE GAME STATE ---
+            // We enable the button as the absolute first priority to bypass potential rendering lag 
+            // caused by other DOM elements like the scoreboard.
+            if (data.status === 'playing' && data.hasCut) {
+                const myData = data.players.find(p => p.id === user.uid);
+                if (myData && !myData.buzzedAt) {
+                    if (buzzBtn.disabled) {
+                        // Immediately enable button and trigger feedback
+                        buzzBtn.disabled = false;
+                        buzzBtn.innerText = "BUZZ!";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                        if(navigator.vibrate) navigator.vibrate(200);
+                    }
+                }
             }
 
+            // --- 2. UPDATE REMAINING UI ELEMENTS ---
             if (data.lastWinnerId === user.uid) {
                 winOverlay.classList.remove('hidden');
                 if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
@@ -756,16 +761,12 @@
                     statusEl.innerText = "SING!";
                     statusEl.className = "text-4xl font-black text-red-500";
                     buzzContainer.classList.remove('buzz-anim');
+                    
                     const myData = data.players.find(p => p.id === user.uid);
                     if (myData && myData.buzzedAt) {
                         buzzBtn.innerText = "BUZZED!";
                         buzzBtn.disabled = true;
                         buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
-                    } else {
-                        buzzBtn.innerText = "BUZZ!";
-                        buzzBtn.disabled = false;
-                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                        if(navigator.vibrate) navigator.vibrate(200);
                     }
                 } else {
                     statusEl.innerText = "LISTEN...";
@@ -787,6 +788,19 @@
                 buzzBtn.disabled = true;
                 buzzBtn.innerText = "WAIT";
                 buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+            }
+
+            // --- 3. RENDER HEAVY ELEMENTS LAST ---
+            if (scoreboard) {
+                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
+                scoreboard.innerHTML = sorted.map(p => `
+                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
+                        <span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">
+                            ${p.id === user.uid ? '⭐ ' : ''}${p.name}
+                        </span>
+                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span>
+                    </div>
+                `).join('');
             }
         }
 
