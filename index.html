@@ -125,7 +125,7 @@
             isSpotifyPlaying: false,
             localHasPaused: false,
             isPendingNext: false,
-            skippedTrackUri: null // Track URI we just skipped to prevent race conditions
+            skippedTrackUri: null 
         };
 
         function getFirebaseConfig() {
@@ -441,7 +441,6 @@
             gameLog("Leaving room...");
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
-                // Remove self from the players array in Firestore before clearing local state
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
                     if (!snap.exists()) return;
@@ -960,8 +959,6 @@
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
-                    // --- AUTO START ON SKIP FIX ---
-                    // Only start the round if isPendingNext is true AND the track URI has actually changed
                     if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
                         localState.isPendingNext = false;
                         localState.skippedTrackUri = null;
@@ -971,6 +968,17 @@
                         const snap = await getDoc(roomRef); 
                         const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
                         
+                        // SYNC POINT: Update metadata UI exactly when we trigger the new round
+                        const t = document.getElementById('track-name');
+                        if(t) t.innerText = track.name;
+                        const a = document.getElementById('artist-name');
+                        if(a) a.innerText = track.artists[0].name;
+                        const art = document.getElementById('album-art');
+                        if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+
+                        // Re-enable host volume now that round is starting
+                        if(playerInstance) await playerInstance.setVolume(0.8);
+
                         await updateDoc(roomRef, { 
                             status: 'playing', 
                             currentTrackUri: track.uri,
@@ -984,7 +992,7 @@
                         return;
                     }
 
-                    if (localState.status !== 'lobby') {
+                    if (localState.status !== 'lobby' && !localState.isPendingNext) {
                         const t = document.getElementById('track-name');
                         if(t) t.innerText = track.name;
                         const a = document.getElementById('artist-name');
@@ -1045,8 +1053,6 @@
         document.getElementById('nextRoundBtn').onclick = async () => {
              gameLog("⏭ Skipping Track...");
              
-             // --- SKIP VERIFICATION SETUP ---
-             // Record the current track to ensure the listener waits for a different one
              if (playerInstance) {
                 const state = await playerInstance.getCurrentState();
                 localState.skippedTrackUri = state?.track_window?.current_track?.uri || null;
@@ -1056,9 +1062,18 @@
              localState.localAudioAnchor = null; 
              localState.localHasPaused = false;
 
+             // OPTIMISTIC UI CLEAR: Clear metadata immediately so host doesn't see old song info
+             const t = document.getElementById('track-name');
+             if(t) t.innerText = "Skipping...";
+             const a = document.getElementById('artist-name');
+             if(a) a.innerText = "Finding new track...";
+             const art = document.getElementById('album-art');
+             if(art) art.innerHTML = `<div class="animate-pulse bg-white/10 w-full h-full"></div>`;
+
              if(playerInstance) { 
                  await playerInstance.activateElement(); 
-                 await playerInstance.setVolume(0.8); 
+                 // MUTE HOST: Don't let host hear the next song until metadata is ready and round starts
+                 await playerInstance.setVolume(0); 
                  await playerInstance.nextTrack(); 
                  await playerInstance.resume(); 
              }
@@ -1147,7 +1162,6 @@
                     <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
                     <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
                 </div>
-                <!-- ROOM LOGOUT BUTTON -->
                 <button onclick="leaveRoom()" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">
                     Leave
                 </button>
