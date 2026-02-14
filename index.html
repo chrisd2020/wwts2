@@ -149,7 +149,6 @@
                                     document.getElementById('roomCodeDisplay').innerText = roomId;
                                     subscribeToRoom(roomId, 'host');
                                 } else {
-                                    // Check if user is an existing player in this room
                                     const me = (data.players || []).find(p => p.id === user.uid);
                                     if (me) {
                                         roomId = savedRoomId;
@@ -260,19 +259,14 @@
 
                 const data = snap.data();
                 const players = data.players || [];
-                
-                // --- REJOIN LOGIC ---
-                // If a player with this name already exists, pick up that session.
                 const existingPlayer = players.find(p => p.name.toLowerCase() === name.toLowerCase());
 
                 if (existingPlayer) {
-                    // Update the existing player object with current UID (in case user cleared cache/is on new device)
                     const updatedPlayers = players.map(p => 
                         p.name.toLowerCase() === name.toLowerCase() ? { ...p, id: user.uid } : p
                     );
                     await updateDoc(roomRef, { players: updatedPlayers });
                 } else {
-                    // Normal Join
                     const playerData = { id: user.uid, name: name, buzzedAt: null, score: 0 };
                     await updateDoc(roomRef, { players: arrayUnion(playerData) });
                 }
@@ -299,13 +293,25 @@
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
                 if(!doc.exists()) {
-                    // Room deleted by host
                     handleLogout();
                     return;
                 }
                 const data = doc.data();
                 
-                // --- KICK/REMOVAL LOGIC FOR PLAYERS ---
+                // --- ULTRA-FAST BUZZER TRIGGER (HIGHEST PRIORITY) ---
+                if (role === 'player' && data.status === 'playing' && data.hasCut) {
+                    const buzzBtn = document.getElementById('player-buzz-btn');
+                    if (buzzBtn && buzzBtn.disabled) {
+                        const me = data.players.find(p => p.id === user.uid);
+                        if (me && !me.buzzedAt) {
+                            buzzBtn.disabled = false;
+                            buzzBtn.innerText = "BUZZ!";
+                            buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                            if(navigator.vibrate) navigator.vibrate(200);
+                        }
+                    }
+                }
+
                 if (role === 'player') {
                     const isStillInRoom = (data.players || []).some(p => p.id === user.uid);
                     if (!isStillInRoom) {
@@ -314,13 +320,11 @@
                     }
                 }
 
-                // --- HOST REFRESH SYNC ---
                 if (role === 'host' && isHostFirstLoad) {
                     isHostFirstLoad = false;
                     window.hostResetRound(); 
                 }
 
-                // --- UPDATE LOCAL STATE ---
                 localState.players = data.players || [];
                 localState.status = data.status;
                 localState.hasCut = data.hasCut;
@@ -732,14 +736,11 @@
             const scoreboard = document.getElementById('player-scoreboard');
             const winOverlay = document.getElementById('win-overlay');
 
-            // --- 1. PRIORITIZE COMPETITIVE GAME STATE ---
-            // We enable the button as the absolute first priority to bypass potential rendering lag 
-            // caused by other DOM elements like the scoreboard.
             if (data.status === 'playing' && data.hasCut) {
-                const myData = data.players.find(p => p.id === user.uid);
-                if (myData && !myData.buzzedAt) {
-                    if (buzzBtn.disabled) {
-                        // Immediately enable button and trigger feedback
+                // If snap listener didn't catch it, double check here
+                if (buzzBtn && buzzBtn.disabled) {
+                    const myData = data.players.find(p => p.id === user.uid);
+                    if (myData && !myData.buzzedAt) {
                         buzzBtn.disabled = false;
                         buzzBtn.innerText = "BUZZ!";
                         buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
@@ -748,7 +749,6 @@
                 }
             }
 
-            // --- 2. UPDATE REMAINING UI ELEMENTS ---
             if (data.lastWinnerId === user.uid) {
                 winOverlay.classList.remove('hidden');
                 if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
@@ -790,7 +790,6 @@
                 buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
             }
 
-            // --- 3. RENDER HEAVY ELEMENTS LAST ---
             if (scoreboard) {
                 const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
                 scoreboard.innerHTML = sorted.map(p => `
@@ -927,8 +926,15 @@
              }
         };
         
-        document.getElementById('search-btn').onclick = async () => {
-            const query = document.getElementById('search-input').value;
+        const searchInput = document.getElementById('search-input');
+        const searchBtn = document.getElementById('search-btn');
+
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchBtn.click();
+        });
+
+        searchBtn.onclick = async () => {
+            const query = searchInput.value;
             if(!token) return alert("Log in first");
             const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${token}` } });
             const data = await res.json();
