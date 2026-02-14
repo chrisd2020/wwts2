@@ -101,8 +101,9 @@
             currentTrackUri: null,
             isTestMode: false,
             
-            // Client-Side Accurate Anchor
-            clientAudioStartTime: null, // Date.now() when audio hits position 0
+            // localAudioAnchor: Accurate Date.now() when song hits 0ms.
+            // This is updated continuously from Spotify SDK state for perfect sync.
+            localAudioAnchor: null, 
             isSpotifyPlaying: false
         };
 
@@ -347,9 +348,9 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
-                // Reset anchor on new rounds
-                if (localState.status === 'lobby') {
-                    localState.clientAudioStartTime = null;
+                // Reset anchor on state transitions back to lobby or clean starts
+                if (localState.status === 'lobby' || (oldStatus !== 'playing' && localState.status === 'playing')) {
+                    localState.localAudioAnchor = null;
                 }
 
                 // --- REMOTE AUDIO SYNC LOGIC ---
@@ -548,47 +549,47 @@
                     return; 
                 }
                 
-                // Host/Global Game Clock
-                let elapsed = 0;
-                if (localState.status === 'playing' || localState.status === 'revealing') {
-                    elapsed = (Date.now() - localState.startTime) / 1000;
-                    elapsed = Math.max(0, elapsed);
-                } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
-                    elapsed = localState.pauseTime;
+                // --- ACCURATE AUDIO-SYNCED ELAPSED TIME ---
+                // We use localAudioAnchor which is tied to actual Spotify progress.
+                let audioElapsed = 0;
+                if (localState.localAudioAnchor) {
+                    audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
+                } else {
+                    // Stay at 0 until Spotify provides an anchor
+                    audioElapsed = 0;
+                }
+
+                // If round is complete or paused, we freeze at the final pause time
+                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
+                    audioElapsed = localState.pauseTime;
                 }
 
                 // Update Host Timer
                 const hostTimer = document.getElementById('gameTimer');
-                if (hostTimer) hostTimer.innerText = elapsed.toFixed(2);
+                if (hostTimer) hostTimer.innerText = audioElapsed.toFixed(2);
                 
                 const hostProgress = document.getElementById('timeline-progress');
-                if (hostProgress) hostProgress.style.width = Math.min((elapsed/60)*100, 100) + '%';
+                if (hostProgress) hostProgress.style.width = Math.min((audioElapsed/60)*100, 100) + '%';
 
                 // Update Player Timer
                 const playerTimer = document.getElementById('player-game-timer');
                 const playerProgress = document.getElementById('player-timeline-progress');
                 if (playerTimer || playerProgress) {
-                    let pElapsed = 0;
+                    let pElapsed = audioElapsed;
                     const me = localState.players.find(p => p.id === user.uid);
-                    
                     if (me && me.buzzedAt !== null) {
                         pElapsed = me.buzzedAt;
-                    } else if (localState.clientAudioStartTime) {
-                        // FIX: Once playback starts, the client timer anchor is set.
-                        // This continues to count up even if Spotify is paused (the CUT).
-                        pElapsed = (Date.now() - localState.clientAudioStartTime) / 1000;
-                    } else {
-                        pElapsed = 0;
                     }
-                    
                     if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
                     if (playerProgress) playerProgress.style.width = Math.min((pElapsed/60)*100, 100) + '%';
                 }
 
+                // Highlight logic and auto-cut
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
-                     highlightClosest(elapsed);
+                     highlightClosest(audioElapsed);
                 }
-                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && elapsed >= localState.autoCutTime) {
+                // Host triggers Auto-Cut based on EXACT audio position
+                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && audioElapsed >= localState.autoCutTime) {
                     window.hostTriggerCut();
                 }
                 localState.timerInterval = requestAnimationFrame(loop);
@@ -615,6 +616,9 @@
             const snap = await getDoc(roomRef);
             const data = snap.data();
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
+
+            // Reset local anchor for fresh count
+            localState.localAudioAnchor = null;
 
             await updateDoc(roomRef, {
                 status: 'playing',
@@ -672,16 +676,17 @@
         window.hostEndRound = async () => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const elapsed = (Date.now() - localState.startTime) / 1000;
-             await updateDoc(roomRef, { status: 'complete', pauseTime: elapsed });
+             // Use accurate audio time for end round marker
+             const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
+             await updateDoc(roomRef, { status: 'complete', pauseTime: audioTime });
         };
 
         window.hostToggleReveal = async () => {
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             if (localState.status === 'revealing') {
-                const elapsed = (Date.now() - localState.startTime) / 1000;
-                await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: elapsed });
+                const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : localState.pauseTime;
+                await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: audioTime });
                 if(playerInstance) playerInstance.pause();
             } else {
                 let startOffset = 0;
@@ -690,6 +695,7 @@
                 } else {
                     startOffset = 0;
                 }
+                // When starting reveal, we update global startTime to let clients know target position
                 await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - startOffset });
                 if(playerInstance) {
                     await playerInstance.setVolume(0.8);
@@ -705,9 +711,9 @@
              const snap = await getDoc(roomRef);
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
+             localState.localAudioAnchor = null;
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
              if(playerInstance) playerInstance.pause();
-             localState.clientAudioStartTime = null;
         };
 
         window.awardWin = async (pid) => {
@@ -730,8 +736,8 @@
                         pauseTime: 0
                     });
                 });
+                localState.localAudioAnchor = null;
                 if(playerInstance) playerInstance.pause();
-                localState.clientAudioStartTime = null;
              } catch(e) { console.error("Award win error", e); }
         };
 
@@ -786,6 +792,10 @@
                 const seconds = getScrubTime(e);
                 const appId = window.__app_id || 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                
+                // Immediately update local anchor to prevent visual jump
+                localState.localAudioAnchor = Date.now() - (seconds * 1000);
+
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                      await updateDoc(roomRef, { pauseTime: seconds });
                 } else if (localState.status === 'revealing') {
@@ -909,13 +919,10 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // ACCURATE BUZZER TIMESTAMP
-            let buzzedAtSeconds = 0;
-            if (localState.clientAudioStartTime) {
-                buzzedAtSeconds = (Date.now() - localState.clientAudioStartTime) / 1000;
-            }
-            
+            // USE ACCURATE AUDIO-SYNCED POSITION
+            let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
+            
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 await runTransaction(db, async (t) => {
@@ -1046,10 +1053,15 @@
                 const track = state.track_window.current_track;
                 
                 // TRACK AUDIO START ANCHOR
-                if (!state.paused && localState.clientAudioStartTime === null) {
-                    localState.clientAudioStartTime = Date.now() - state.position;
+                // If the player is active, we update the anchor so Timer = Date.now() - anchor matches exactly the song position.
+                if (!state.paused) {
+                    localState.localAudioAnchor = Date.now() - state.position;
+                    localState.isSpotifyPlaying = true;
+                } else {
+                    localState.isSpotifyPlaying = false;
+                    // Note: If paused (the CUT), we do NOT reset the anchor.
+                    // This allows the clock to continue counting naturally based on the original audio start.
                 }
-                localState.isSpotifyPlaying = !state.paused;
 
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
                     const appId = window.__app_id || 'wwts-game'; 
@@ -1085,6 +1097,7 @@
              const snap = await getDoc(roomRef);
              if(snap.exists()) {
                  const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
+                 localState.localAudioAnchor = null;
                  await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: Date.now(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
              }
         };
@@ -1232,7 +1245,7 @@
             
             <div class="mb-8 flex flex-col items-center z-10">
                 <div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div>
-                <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Spotify Playback Sync</div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Spotify Audio Position</div>
             </div>
 
             <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">
@@ -1268,7 +1281,7 @@
                 </div>
                 
                 <div class="space-y-1 pt-2 border-t border-white/5">
-                    <p class="text-[10px] text-gray-500 leading-tight">Players compete on their internal Spotify position. Timer starts when music starts.</p>
+                    <p class="text-[10px] text-gray-500 leading-tight">Players compete on their individual Spotify position. Clocks start when their song actually starts.</p>
                 </div>
 
                 <div class="space-y-1">
@@ -1297,7 +1310,7 @@
                     </div>
                     <div class="text-right">
                         <div id="gameTimer" class="text-5xl font-mono font-bold text-white tabular-nums">0.00</div>
-                        <div class="text-xs text-gray-500 uppercase mt-1">Global Game Time</div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">Audio Sync Time</div>
                     </div>
                 </div>
                 <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
