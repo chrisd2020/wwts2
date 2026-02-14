@@ -435,6 +435,25 @@
             showMainLobby();
         }
 
+        window.leaveRoom = async () => {
+            if (!roomId || !user) { handleLogout(); return; }
+            gameLog("Leaving room...");
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            try {
+                // Remove self from the players array in Firestore before clearing local state
+                await runTransaction(db, async (t) => {
+                    const snap = await t.get(roomRef);
+                    if (!snap.exists()) return;
+                    const players = snap.data().players || [];
+                    const updated = players.filter(p => p.id !== user.uid);
+                    t.update(roomRef, { players: updated });
+                });
+            } catch(e) { 
+                console.error("Error leaving room:", e); 
+            }
+            handleLogout();
+        };
+
         function triggerConfetti() {
             for (let i = 0; i < 40; i++) {
                 const confetti = document.createElement('div');
@@ -1096,7 +1115,7 @@
             </div>
             <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
             <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-black text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
-            <button onclick="clearFirebaseConfig()" class="block w-full text-[10px] text-gray-600 hover:text-gray-400 underline uppercase mt-4">Change Firebase Config</button>
+            <button onclick="clearFirebaseConfig()" class="block w-full text-[10px] text-gray-600 hover:text-gray-400 underline uppercase mt-4 text-center">Change Firebase Config</button>
         </div>
     </div>
 
@@ -1111,7 +1130,16 @@
         <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
-            <div class="flex items-center gap-3"><div class="text-right"><div class="text-[10px] text-gray-500 uppercase font-bold">Room</div><div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div></div></div>
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
+                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+                </div>
+                <!-- ROOM LOGOUT BUTTON -->
+                <button onclick="leaveRoom()" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">
+                    Leave
+                </button>
+            </div>
         </header>
         <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
             <input id="playerClientIdInput" class="client-id-input w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] mr-2" placeholder="Paste Client ID">
