@@ -23,7 +23,6 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Timeline Animations */
         .timeline-marker {
             position: absolute; top: -5px; bottom: -5px; width: 2px; background: white; z-index: 10;
             transition: left 0.2s, background-color 0.1s, height 0.1s, top 0.1s; pointer-events: none;
@@ -52,12 +51,10 @@
         .custom-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
         .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
         
-        /* Interactive Timeline */
         #timeline-container { cursor: default; }
         #timeline-container.interactive { cursor: ew-resize; pointer-events: auto; }
         #timeline-container.interactive:hover { height: 2.5rem; background-color: rgba(0,0,0,0.5); }
 
-        /* Win Animation */
         @keyframes float-up {
             0% { transform: translateY(20px); opacity: 0; }
             100% { transform: translateY(0); opacity: 1; }
@@ -73,6 +70,11 @@
             0% { transform: translateY(-10vh) rotate(0deg); }
             100% { transform: translateY(110vh) rotate(720deg); }
         }
+
+        #debug-log-container {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 10px;
+        }
     </style>
 
     <!-- Firebase SDKs -->
@@ -81,6 +83,19 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // --- DEBUG LOGGER ---
+        window.gameLog = (msg, type = 'info') => {
+            const logEl = document.getElementById('debug-log-content');
+            if (!logEl) return;
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            const div = document.createElement('div');
+            const colors = { info: 'text-gray-400', success: 'text-green-400', error: 'text-red-400', warn: 'text-yellow-400' };
+            div.className = `${colors[type]} mb-1`;
+            div.innerHTML = `<span class="text-gray-600">[${time}]</span> ${msg}`;
+            logEl.prepend(div);
+            console.log(`[${type.toUpperCase()}] ${msg}`);
+        };
+
         // --- FIREBASE SETUP ---
         let app, auth, db, user;
         let roomId = null;
@@ -88,10 +103,8 @@
         let isFirebaseReady = false;
         let isHostFirstLoad = true;
 
-        // Helper to get consistent appId
         const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
 
-        // --- GAME STATE (Local Copy for Loop Logic) ---
         let localState = {
             players: [],
             status: 'idle',
@@ -125,7 +138,6 @@
 
         async function initFirebase() {
             const config = getFirebaseConfig();
-            
             if (!config || !config.apiKey) {
                 const loading = document.getElementById('lobby-loading');
                 const setup = document.getElementById('lobby-setup');
@@ -152,6 +164,7 @@
                     user = u;
                     if(user) {
                         isFirebaseReady = true;
+                        gameLog("Connected to Firebase as " + user.uid.substring(0, 5), "success");
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         
                         if (savedRoomId) {
@@ -165,11 +178,9 @@
                                     const lobby = document.getElementById('lobby-screen');
                                     const host = document.getElementById('host-screen');
                                     const codeDisplay = document.getElementById('roomCodeDisplay');
-                                    
                                     if(lobby) lobby.classList.add('hidden');
                                     if(host) host.classList.remove('hidden');
                                     if(codeDisplay) codeDisplay.innerText = roomId;
-                                    
                                     subscribeToRoom(roomId, 'host');
                                 } else {
                                     const me = (data.players || []).find(p => p.id === user.uid);
@@ -179,12 +190,10 @@
                                         const player = document.getElementById('player-screen');
                                         const pCode = document.getElementById('player-room-code');
                                         const pName = document.getElementById('player-name-display');
-                                        
                                         if(lobby) lobby.classList.add('hidden');
                                         if(player) player.classList.remove('hidden');
                                         if(pCode) pCode.innerText = roomId;
                                         if(pName) pName.innerText = me.name;
-                                        
                                         subscribeToRoom(roomId, 'player');
                                     } else {
                                         localStorage.removeItem('wwts_active_room_id');
@@ -201,7 +210,7 @@
                     }
                 });
             } catch(e) { 
-                console.error("Firebase Init Error", e); 
+                gameLog("Firebase Init Error: " + e.message, "error");
                 const loading = document.getElementById('lobby-loading');
                 const setup = document.getElementById('lobby-setup');
                 if(loading) loading.classList.add('hidden');
@@ -219,19 +228,6 @@
         }
 
         initFirebase();
-
-        window.saveFirebaseConfig = () => {
-            const input = document.getElementById('firebaseConfigInput').value.trim();
-            if(!input) return alert("Please paste the config JSON.");
-            try {
-                let jsonStr = input.includes('=') ? input.substring(input.indexOf('=') + 1) : input;
-                if (jsonStr.endsWith(';')) jsonStr = jsonStr.slice(0, -1);
-                const config = JSON.parse(jsonStr);
-                if (!config.apiKey) throw new Error("Missing 'apiKey'");
-                localStorage.setItem('wwts_firebase_config', JSON.stringify(config));
-                window.location.reload();
-            } catch(e) { alert("Invalid Configuration: " + e.message); }
-        };
 
         window.createRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
@@ -257,17 +253,13 @@
                     currentTrackUri: null,
                     isTestMode: false
                 });
-
+                gameLog("Room " + roomId + " created", "success");
                 localStorage.setItem('wwts_active_room_id', roomId);
-                const lobby = document.getElementById('lobby-screen');
-                const host = document.getElementById('host-screen');
-                const codeDisplay = document.getElementById('roomCodeDisplay');
-                if(lobby) lobby.classList.add('hidden');
-                if(host) host.classList.remove('hidden');
-                if(codeDisplay) codeDisplay.innerText = roomId;
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('host-screen').classList.remove('hidden');
+                document.getElementById('roomCodeDisplay').innerText = roomId;
                 subscribeToRoom(roomId, 'host');
-
-            } catch(e) { console.error("Create Room Error:", e); }
+            } catch(e) { gameLog("Room Creation Error: " + e.message, "error"); }
         };
 
         window.joinRoom = async () => {
@@ -311,37 +303,26 @@
                 localStorage.setItem('wwts_active_room_id', roomId);
                 const lobby = document.getElementById('lobby-screen');
                 const player = document.getElementById('player-screen');
-                const pCode = document.getElementById('player-room-code');
-                const pName = document.getElementById('player-name-display');
                 if(lobby) lobby.classList.add('hidden');
                 if(player) player.classList.remove('hidden');
-                if(pCode) pCode.innerText = roomId;
-                if(pName) pName.innerText = name;
-
+                document.getElementById('player-room-code').innerText = roomId;
+                document.getElementById('player-name-display').innerText = name;
                 subscribeToRoom(code, 'player');
-            } catch(e) { 
-                console.error("Join Error:", e); 
-                if(btn) { btn.innerText = "Join Game"; btn.disabled = false; }
-            }
+            } catch(e) { console.error("Join Error:", e); if(btn) { btn.innerText = "Join Game"; btn.disabled = false; } }
         };
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${id}`);
+            gameLog("Subscribing to room " + id + " as " + role);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
-                if(!doc.exists()) {
-                    handleLogout();
-                    return;
-                }
+                if(!doc.exists()) { handleLogout(); return; }
                 const data = doc.data();
                 
                 if (role === 'player') {
                     const isStillInRoom = (data.players || []).some(p => p.id === user.uid);
-                    if (!isStillInRoom) {
-                        handleLogout();
-                        return;
-                    }
+                    if (!isStillInRoom) { handleLogout(); return; }
                 }
 
                 if (role === 'host' && isHostFirstLoad) {
@@ -361,6 +342,10 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
+                if (role === 'host' && oldStatus !== localState.status) {
+                    gameLog("Room status changed: " + oldStatus + " -> " + localState.status, "warn");
+                }
+
                 const songChanged = oldTrackUri !== localState.currentTrackUri;
                 const roundRestarted = (oldStatus !== 'playing' && localState.status === 'playing');
                 if (localState.status === 'lobby' || songChanged || roundRestarted) {
@@ -368,9 +353,9 @@
                     localState.localHasPaused = false;
                 }
 
-                // IF HOST: Pause audio if round completes via player buzzes
                 if (role === 'host' && playerInstance && localState.status === 'complete' && oldStatus === 'playing') {
                     playerInstance.pause();
+                    gameLog("Playback paused (all buzzed or host forced end)");
                 }
 
                 if (role === 'player' && playerInstance && localState.currentTrackUri) {
@@ -379,25 +364,17 @@
 
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
-            }, (error) => {
-                console.error("Snapshot error:", error);
-            });
+            }, (error) => { gameLog("Firestore Snapshot Error: " + error.message, "error"); });
         }
 
         async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
-
             const shouldPlayOnClient = (localState.status === 'playing' && (!localState.localHasPaused || localState.isTestMode));
-
             if (shouldPlayOnClient) {
                 const targetPosition = Math.max(0, Date.now() - localState.startTime);
                 const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
-                
                 if (needsInitialPlay) {
-                    if (localState.localAudioAnchor === null) {
-                        localState.localAudioAnchor = Date.now() - targetPosition;
-                    }
-
+                    if (localState.localAudioAnchor === null) localState.localAudioAnchor = Date.now() - targetPosition;
                     try {
                         const tokenToUse = await getValidToken();
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
@@ -406,32 +383,26 @@
                         });
                     } catch(e) { console.error("Sync Play Error:", e); }
                 }
-            } else {
-                playerInstance.pause();
-            }
+            } else { playerInstance.pause(); }
         }
 
         function handleLogout() {
             if (unsubscribeRoom) unsubscribeRoom();
-            unsubscribeRoom = null;
-            roomId = null;
+            unsubscribeRoom = null; roomId = null;
             localStorage.removeItem('wwts_active_room_id');
-            const playerScreen = document.getElementById('player-screen');
-            const hostScreen = document.getElementById('host-screen');
-            const lobbyScreen = document.getElementById('lobby-screen');
-            if(playerScreen) playerScreen.classList.add('hidden');
-            if(hostScreen) hostScreen.classList.add('hidden');
-            if(lobbyScreen) lobbyScreen.classList.remove('hidden');
+            const pScreen = document.getElementById('player-screen');
+            const hScreen = document.getElementById('host-screen');
+            const lScreen = document.getElementById('lobby-screen');
+            if(pScreen) pScreen.classList.add('hidden');
+            if(hScreen) hScreen.classList.add('hidden');
+            if(lScreen) lScreen.classList.remove('hidden');
             if (playerInstance) playerInstance.disconnect();
             showMainLobby();
         }
 
-        // --- HOST LOGIC ---
-        
         function updateHostUI(data) {
             const cutDisplay = document.getElementById('cutTimeDisplay');
             const cutSlider = document.getElementById('cutTimeSlider');
-            const cutMarker = document.getElementById('cut-marker');
             const startBtn = document.getElementById('startRoundBtn');
             const revealBtn = document.getElementById('revealBtn');
             const roundStatus = document.getElementById('round-status');
@@ -443,10 +414,8 @@
             if (cutDisplay && cutSlider && document.activeElement !== cutSlider) {
                 cutDisplay.innerText = data.autoCutTime + 's';
                 cutSlider.value = data.autoCutTime;
-                if (cutMarker) {
-                    const cutPos = (data.autoCutTime / 60) * 100;
-                    cutMarker.style.left = `${cutPos}%`;
-                }
+                const cutMarker = document.getElementById('cut-marker');
+                if (cutMarker) cutMarker.style.left = `${(data.autoCutTime / 60) * 100}%`;
             }
 
             const testToggle = document.getElementById('syncTestToggle');
@@ -456,21 +425,19 @@
                 const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
                 hostScoreboard.innerHTML = sorted.map((p, idx) => `
                     <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
-                        <span class="text-xs truncate mr-2 text-gray-300">
-                            ${idx === 0 ? '👑 ' : ''}${p.name}
-                        </span>
+                        <span class="text-xs truncate mr-2 text-gray-300">${idx === 0 ? '👑 ' : ''}${p.name}</span>
                         <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-[10px]">${p.score || 0}</span>
                     </div>
                 `).join('');
             }
 
             if (data.status === 'lobby' && data.queuedPlaylist) {
-                const trkName = document.getElementById('track-name');
-                const artName = document.getElementById('artist-name');
-                const albArt = document.getElementById('album-art');
-                if(trkName) trkName.innerText = data.queuedPlaylist.name;
-                if(artName) artName.innerText = "Ready to Start";
-                if(albArt) albArt.innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
+                const t = document.getElementById('track-name');
+                const a = document.getElementById('artist-name');
+                const img = document.getElementById('album-art');
+                if(t) t.innerText = data.queuedPlaylist.name;
+                if(a) a.innerText = "Ready to Start";
+                if(img) img.innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
             }
             
             if (!startBtn || !revealBtn || !roundStatus) return;
@@ -505,20 +472,12 @@
                 revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1 w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 if(timelineContainer) timelineContainer.classList.add('interactive');
-            } else if (data.status === 'revealing') {
+            } else if (data.status === 'revealing' || data.status === 'paused_reveal') {
                 if(!localState.timerInterval) startLoop();
-                roundStatus.innerText = "Revealing";
+                roundStatus.innerText = data.status === 'revealing' ? "Revealing" : "Paused";
                 revealBtn.disabled = false;
-                revealBtn.innerText = "⏸ Pause Reveal";
-                revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow active:translate-y-1 w-full";
-                revealBtn.onclick = () => window.hostToggleReveal();
-                if(timelineContainer) timelineContainer.classList.add('interactive');
-            } else if (data.status === 'paused_reveal') {
-                if(!localState.timerInterval) startLoop();
-                roundStatus.innerText = "Paused";
-                revealBtn.disabled = false;
-                revealBtn.innerText = "▶ Resume Reveal";
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1 w-full";
+                revealBtn.innerText = data.status === 'revealing' ? "⏸ Pause Reveal" : "▶ Resume Reveal";
+                revealBtn.className = data.status === 'revealing' ? "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow w-full" : "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 if(timelineContainer) timelineContainer.classList.add('interactive');
             } else {
@@ -533,9 +492,9 @@
                 revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl w-full";
                 if(timelineContainer) timelineContainer.classList.remove('interactive');
                 const gTimer = document.getElementById('gameTimer');
-                const tProgress = document.getElementById('timeline-progress');
+                const tProg = document.getElementById('timeline-progress');
                 if(gTimer) gTimer.innerText = "0.00";
-                if(tProgress) tProgress.style.width = "0%";
+                if(tProg) tProg.style.width = "0%";
             }
         }
 
@@ -543,18 +502,13 @@
             const grid = document.getElementById('playerGrid');
             const markersContainer = document.getElementById('timeline-markers');
             if (!grid || !markersContainer) return;
-            
             markersContainer.innerHTML = ''; 
-
             const players = data.players || [];
-            players.sort((a, b) => {
-                if (a.buzzedAt && b.buzzedAt) return a.buzzedAt - b.buzzedAt;
-                if (a.buzzedAt) return -1; if (b.buzzedAt) return 1; return 0;
-            });
+            players.sort((a, b) => (a.buzzedAt && b.buzzedAt) ? a.buzzedAt - b.buzzedAt : (a.buzzedAt ? -1 : 1));
 
             grid.innerHTML = players.map((p, i) => {
-                const isBuzzed = p.buzzedAt !== null;
-                if (isBuzzed && data.status !== 'lobby') {
+                const buzzed = p.buzzedAt !== null;
+                if (buzzed && data.status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
                     marker.id = `marker-${p.id}`; 
@@ -563,45 +517,33 @@
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name} ${p.buzzedAt.toFixed(2)}s</div>`;
                     markersContainer.appendChild(marker);
                 }
-                const canAward = isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
+                const canAward = buzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
                 return `
-                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'winner-card' : ''}">
-                    <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center transition shadow z-20" title="Remove Player">×</button>
+                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${buzzed ? 'winner-card' : ''}">
+                    <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center z-20">×</button>
                     <div class="flex justify-between w-full text-xs text-gray-400 px-1">
                         <span class="truncate pr-1">${p.name} (Pts: ${p.score || 0})</span>
-                        ${isBuzzed ? `<span class="text-yellow-500 font-bold shrink-0">#${i+1}</span>` : ''}
+                        ${buzzed ? `<span class="text-yellow-500 font-bold shrink-0">#${i+1}</span>` : ''}
                     </div>
-                    <div class="w-full py-4 rounded-lg font-black text-xl flex items-center justify-center
-                        ${isBuzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
-                        ${isBuzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
+                    <div class="w-full py-4 rounded-lg font-black text-xl flex items-center justify-center ${buzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
+                        ${buzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
                     </div>
-                    ${canAward ? 
-                        `<button id="award-btn-${p.id}" onclick="awardWin('${p.id}')" class="award-btn hidden text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Confirm Winner (+1)</button>` 
-                        : ''}
-                </div>
-            `}).join('');
+                    ${canAward ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Confirm Winner (+1)</button>` : ''}
+                </div>`;
+            }).join('');
         }
 
         function startLoop() {
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             function loop() {
-                if (localState.isDragging) {
-                    localState.timerInterval = requestAnimationFrame(loop);
-                    return; 
-                }
-                
+                if (localState.isDragging) { localState.timerInterval = requestAnimationFrame(loop); return; }
                 let audioElapsed = 0;
-                if (localState.localAudioAnchor !== null) {
-                    audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
-                }
-
-                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
-                    audioElapsed = localState.pauseTime;
-                }
+                if (localState.localAudioAnchor !== null) audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
+                if (localState.status === 'paused_reveal' || localState.status === 'complete') audioElapsed = localState.pauseTime;
 
                 const hostTimer = document.getElementById('gameTimer');
-                if (hostTimer) hostTimer.innerText = audioElapsed.toFixed(2);
                 const hostProgress = document.getElementById('timeline-progress');
+                if (hostTimer) hostTimer.innerText = audioElapsed.toFixed(2);
                 if (hostProgress) hostProgress.style.width = Math.min((audioElapsed/60)*100, 100) + '%';
 
                 const playerTimer = document.getElementById('player-game-timer');
@@ -609,16 +551,12 @@
                 if (playerTimer || playerProgress) {
                     let pElapsed = audioElapsed;
                     const me = localState.players.find(p => p.id === user.uid);
-                    if (me && me.buzzedAt !== null) {
-                        pElapsed = me.buzzedAt;
-                    }
+                    if (me && me.buzzedAt !== null) pElapsed = me.buzzedAt;
                     if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
                     if (playerProgress) playerProgress.style.width = Math.min((pElapsed/60)*100, 100) + '%';
                 }
 
-                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
-                     highlightClosest(audioElapsed);
-                }
+                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') highlightClosest(audioElapsed);
                 
                 if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
                     if (!localState.localHasPaused) {
@@ -626,13 +564,10 @@
                         const hScreen = document.getElementById('host-screen');
                         if (roomId && hScreen && !hScreen.classList.contains('hidden') && !localState.hasCut) {
                             const cutCheck = document.getElementById('autoCutToggle');
-                            if (cutCheck && cutCheck.checked) {
-                                window.hostTriggerCut();
-                            }
+                            if (cutCheck && cutCheck.checked) window.hostTriggerCut();
                         }
                     }
                 }
-
                 localState.timerInterval = requestAnimationFrame(loop);
             }
             localState.timerInterval = requestAnimationFrame(loop);
@@ -641,34 +576,33 @@
         async function localTriggerAudioCut() {
             if (localState.localHasPaused) return;
             localState.localHasPaused = true;
+            gameLog("Local Audio Cut Triggered (Fading out)", "warn");
             if (localState.isTestMode) return;
-
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.05);
                 if(playerInstance) playerInstance.setVolume(vol);
-                if(vol <= 0) {
-                    clearInterval(fade);
-                    if(playerInstance) playerInstance.pause();
-                }
+                if(vol <= 0) { clearInterval(fade); if(playerInstance) playerInstance.pause(); }
             }, 50);
         }
 
         window.selectPlaylist = async (uri, name, img) => {
              if(!deviceId) return alert("Player not ready.");
+             gameLog("Playlist selected: " + name);
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
-             const tName = document.getElementById('track-name');
-             const aName = document.getElementById('artist-name');
-             const aArt = document.getElementById('album-art');
-             if(tName) tName.innerText = name;
-             if(aName) aName.innerText = "Ready to Start";
-             if(aArt) aArt.innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
+             const t = document.getElementById('track-name');
+             const a = document.getElementById('artist-name');
+             const art = document.getElementById('album-art');
+             if(t) t.innerText = name;
+             if(a) a.innerText = "Ready to Start";
+             if(art) art.innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
         };
 
         window.hostStartRound = async () => {
-            if (!roomId) return;
-            if (!deviceId || !token) return alert("Please link Spotify first.");
+            gameLog("--- Attempting to Start Round ---", "warn");
+            if (!roomId) { gameLog("Start Failed: No Room ID", "error"); return; }
+            if (!deviceId || !token) { gameLog("Start Failed: Spotify not linked", "error"); return alert("Link Spotify first."); }
 
             const startBtn = document.getElementById('startRoundBtn');
             if (startBtn) startBtn.innerText = "Starting...";
@@ -679,7 +613,6 @@
             
             try {
                 const snap = await getDoc(roomRef);
-                if (!snap.exists()) return;
                 const data = snap.data();
                 const cleanPlayers = (data.players || []).map(p => ({...p, buzzedAt: null}));
 
@@ -687,99 +620,86 @@
                 localState.localHasPaused = false;
 
                 const tokenToUse = await getValidToken();
+                gameLog("Token validated. Device ID: " + deviceId.substring(0, 5) + "...");
 
-                // 1. Force Spotify to start playback
                 if(playerInstance) {
+                    gameLog("Activating Spotify Element...");
                     await playerInstance.activateElement();
                     await playerInstance.setVolume(0.8);
                     
                     if (data.queuedPlaylist) {
-                        // Case A: Playing a new playlist
+                        gameLog("Branch A: Playing fresh context: " + data.queuedPlaylist.name);
                         await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
                         });
-                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        const playRes = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                         });
+                        gameLog("Spotify Play (New Context) Status: " + playRes.status);
                         await updateDoc(roomRef, { queuedPlaylist: null });
                     } else if (localState.currentTrackUri) {
-                        // Case B: Re-playing the same track (ensure it actually wakes up by re-sending context)
-                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        gameLog("Branch B: Re-playing track: " + localState.currentTrackUri.substring(0, 15) + "...");
+                        const playRes = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: 0 })
                         });
+                        gameLog("Spotify Play (Existing Track) Status: " + playRes.status);
                     } else {
-                        // Case C: No known track, just try to resume
+                        gameLog("Branch C: No track/playlist. Attempting internal seek/resume...", "warn");
                         await playerInstance.seek(0);
                         await playerInstance.resume();
                     }
+                } else {
+                    gameLog("Error: playerInstance is null", "error");
                 }
 
-                // 2. Update DB status to 'playing'
+                gameLog("Updating database status to 'playing'...");
                 await updateDoc(roomRef, {
-                    status: 'playing',
-                    hasCut: false,
-                    startTime: Date.now(),
-                    pauseTime: 0,
-                    autoCutTime: cutTime,
-                    players: cleanPlayers,
-                    lastWinnerId: null
+                    status: 'playing', hasCut: false, startTime: Date.now(),
+                    pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, lastWinnerId: null
                 });
+                gameLog("Round Started Successfully!", "success");
 
             } catch (e) {
-                console.error("Start Round Error:", e);
+                gameLog("CRITICAL START ERROR: " + e.message, "error");
                 if (startBtn) startBtn.innerText = "Error - Retry";
             }
         };
 
         window.hostTriggerCut = async () => {
+            gameLog("Host manually triggered music cut", "warn");
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { hasCut: true });
             localTriggerAudioCut();
-        };
-
-        window.toggleSyncTest = async (e) => {
-            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await updateDoc(roomRef, { isTestMode: e.checked });
-        };
-
-        window.hostEndRound = async () => {
-             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
-             await updateDoc(roomRef, { status: 'complete', pauseTime: audioTime });
         };
 
         window.hostToggleReveal = async () => {
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             if (localState.status === 'revealing') {
                 const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : localState.pauseTime;
+                gameLog("Reveal Paused at " + audioTime.toFixed(2) + "s");
                 await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: audioTime });
                 if(playerInstance) playerInstance.pause();
             } else {
-                let startOffset = 0;
-                if (localState.status === 'paused_reveal') {
-                    startOffset = localState.pauseTime * 1000;
-                } else {
-                    startOffset = 0;
-                }
-                await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - startOffset });
+                let offset = localState.status === 'paused_reveal' ? localState.pauseTime * 1000 : 0;
+                gameLog("Reveal Started/Resumed at " + (offset/1000).toFixed(2) + "s");
+                await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - offset });
                 if(playerInstance) {
                     await playerInstance.setVolume(0.8);
-                    await playerInstance.seek(startOffset);
+                    await playerInstance.seek(offset);
                     await playerInstance.resume();
                 }
             }
         };
 
         window.hostResetRound = async () => {
+             gameLog("Resetting Round to Lobby State");
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const snap = await getDoc(roomRef);
-             if (!snap.exists()) return;
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
-             localState.localAudioAnchor = null;
-             localState.localHasPaused = false;
+             localState.localAudioAnchor = null; localState.localHasPaused = false;
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
              if(playerInstance) playerInstance.pause();
         };
@@ -789,215 +709,48 @@
              try {
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
-                    if (!snap.exists()) return;
                     const players = snap.data().players || [];
-                    const updated = players.map(p => {
-                        if (p.id === pid) return { ...p, score: (p.score || 0) + 1 };
-                        return p;
-                    });
-                    t.update(roomRef, { 
-                        players: updated,
-                        lastWinnerId: pid,
-                        status: 'lobby',
-                        hasCut: false,
-                        pauseTime: 0
-                    });
+                    const updated = players.map(p => p.id === pid ? { ...p, score: (p.score || 0) + 1 } : p);
+                    t.update(roomRef, { players: updated, lastWinnerId: pid, status: 'lobby', hasCut: false, pauseTime: 0 });
                 });
-                localState.localAudioAnchor = null;
-                localState.localHasPaused = false;
+                gameLog("Winner Awarded: " + pid.substring(0, 5), "success");
+                localState.localAudioAnchor = null; localState.localHasPaused = false;
                 if(playerInstance) playerInstance.pause();
              } catch(e) { console.error("Award win error", e); }
         };
 
+        window.hostEndRound = async () => {
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             const time = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
+             gameLog("Host forced end of round at " + time.toFixed(2) + "s");
+             await updateDoc(roomRef, { status: 'complete', pauseTime: time });
+        };
+
         window.removePlayer = async (pid) => {
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            try {
-                const snap = await getDoc(roomRef);
-                if (snap.exists()) {
-                    const players = snap.data().players || [];
-                    const updated = players.filter(p => p.id !== pid);
-                    await updateDoc(roomRef, { players: updated });
-                }
-            } catch(e) { console.error("Remove player error", e); }
+            const snap = await getDoc(roomRef);
+            const updated = (snap.data().players || []).filter(p => p.id !== pid);
+            await updateDoc(roomRef, { players: updated });
+            gameLog("Player removed: " + pid.substring(0, 5));
         };
-
-        window.playerLeave = async () => {
-            if (!user || !roomId) return;
-            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            try {
-                const snap = await getDoc(roomRef);
-                if (snap.exists()) {
-                    const players = snap.data().players || [];
-                    const updated = players.filter(p => p.id !== user.uid);
-                    await updateDoc(roomRef, { players: updated });
-                }
-            } catch(e) { console.error("Leave error:", e); }
-            handleLogout();
-        };
-
-        const timeline = document.getElementById('timeline-container');
-        function getScrubTime(e) {
-            if (!timeline) return 0;
-            const rect = timeline.getBoundingClientRect();
-            let x = e.clientX - rect.left;
-            x = Math.max(0, Math.min(x, rect.width));
-            const pct = x / rect.width;
-            return pct * 60; 
-        }
-        if(timeline) {
-            timeline.addEventListener('mousedown', (e) => {
-                if (!timeline.classList.contains('interactive')) return;
-                localState.isDragging = true;
-                handleScrub(e);
-            });
-        }
-        window.addEventListener('mousemove', (e) => {
-            if (localState.isDragging) handleScrub(e);
-        });
-        window.addEventListener('mouseup', async (e) => {
-            if (localState.isDragging) {
-                localState.isDragging = false;
-                const seconds = getScrubTime(e);
-                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                localState.localAudioAnchor = Date.now() - (seconds * 1000);
-                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
-                     await updateDoc(roomRef, { pauseTime: seconds });
-                } else if (localState.status === 'revealing') {
-                     await updateDoc(roomRef, { startTime: Date.now() - (seconds * 1000) });
-                }
-                if(playerInstance) await playerInstance.seek(seconds * 1000);
-            }
-        });
-        function handleScrub(e) {
-            const seconds = getScrubTime(e);
-            const gTimer = document.getElementById('gameTimer');
-            const tProgress = document.getElementById('timeline-progress');
-            if(gTimer) gTimer.innerText = seconds.toFixed(2);
-            if(tProgress) tProgress.style.width = ((seconds/60)*100) + '%';
-            highlightClosest(seconds);
-        }
-        function highlightClosest(elapsed) {
-            const players = localState.players;
-            let closestId = null;
-            let minDiff = Infinity;
-            players.forEach(p => {
-                if (p.buzzedAt !== null) {
-                    const diff = Math.abs(elapsed - p.buzzedAt);
-                    if (diff < minDiff) { minDiff = diff; closestId = p.id; }
-                }
-            });
-            players.forEach(p => {
-                const card = document.getElementById(`player-card-${p.id}`);
-                const marker = document.getElementById(`marker-${p.id}`);
-                const awardBtn = document.getElementById(`award-btn-${p.id}`);
-                if (p.id === closestId) { 
-                    if(card) { card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10'); card.classList.remove('winner-card'); }
-                    if(marker) marker.classList.add('marker-closest');
-                    if(awardBtn) awardBtn.classList.remove('hidden');
-                } else {
-                    if(card) { card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10'); if(p.buzzedAt !== null) card.classList.add('winner-card'); }
-                    if(marker) marker.classList.remove('marker-closest');
-                    if(awardBtn) awardBtn.classList.add('hidden');
-                }
-            });
-        }
-
-        function updatePlayerUI(data) {
-            const buzzBtn = document.getElementById('player-buzz-btn');
-            const statusEl = document.getElementById('player-status');
-            const buzzContainer = document.getElementById('buzz-container');
-            const scoreboard = document.getElementById('player-scoreboard');
-            const winOverlay = document.getElementById('win-overlay');
-
-            if (data.status === 'playing' || data.status === 'revealing') {
-                if (!localState.timerInterval) startLoop();
-            }
-
-            if (data.lastWinnerId === user.uid) {
-                if(winOverlay) winOverlay.classList.remove('hidden');
-                if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
-            } else {
-                if(winOverlay) winOverlay.classList.add('hidden');
-            }
-
-            if (!statusEl || !buzzBtn) return;
-
-            if (data.status === 'playing') {
-                if (data.hasCut) {
-                    statusEl.innerText = data.isTestMode ? "TEST SYNC..." : "SING!";
-                    statusEl.className = data.isTestMode ? "text-2xl font-bold text-yellow-400" : "text-4xl font-black text-red-500";
-                    if(buzzContainer) buzzContainer.classList.remove('buzz-anim');
-                    
-                    const myData = data.players.find(p => p.id === user.uid);
-                    if (myData && myData.buzzedAt !== null) {
-                        buzzBtn.innerText = "BUZZED!";
-                        buzzBtn.disabled = true;
-                        buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
-                    } else {
-                        buzzBtn.disabled = false;
-                        buzzBtn.innerText = "BUZZ!";
-                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
-                        if(navigator.vibrate) navigator.vibrate(200);
-                    }
-                } else {
-                    statusEl.innerText = "LISTEN...";
-                    statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
-                    buzzBtn.disabled = true;
-                    buzzBtn.innerText = "LISTEN";
-                    buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
-                }
-            } else if (data.status === 'complete') {
-                statusEl.innerText = "Round Over";
-                statusEl.className = "text-xl text-yellow-400 font-bold";
-                buzzBtn.disabled = true;
-                buzzBtn.innerText = "DONE";
-                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-none opacity-80";
-            } else {
-                statusEl.innerText = "Waiting for Host...";
-                statusEl.className = "text-xl text-gray-400";
-                buzzBtn.disabled = true;
-                buzzBtn.innerText = "WAIT";
-                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
-            }
-
-            if (scoreboard) {
-                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
-                scoreboard.innerHTML = sorted.map(p => `
-                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
-                        <span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">
-                            ${p.id === user.uid ? '⭐ ' : ''}${p.name}
-                        </span>
-                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span>
-                    </div>
-                `).join('');
-            }
-        }
 
         window.playerBuzz = async () => {
-            if(!roomId || !user) return;
             const btn = document.getElementById('player-buzz-btn');
             if(btn) btn.innerText = "SENDING...";
-            
-            let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
-            const elapsed = Math.max(0, buzzedAtSeconds);
+            let elapsed = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
             try {
                 await runTransaction(db, async (t) => {
-                    const docSnap = await t.get(roomRef);
-                    if (!docSnap.exists()) return;
-                    const data = docSnap.data();
+                    const snap = await t.get(roomRef);
+                    const data = snap.data();
                     if (!data.hasCut) return; 
                     const players = data.players;
-                    const myIndex = players.findIndex(p => p.id === user.uid);
-                    if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
-                        players[myIndex].buzzedAt = elapsed; 
-                        if (data.isTestMode) {
-                            t.update(roomRef, { players });
-                            return;
-                        }
-                        const allBuzzed = players.every(p => p.buzzedAt !== null);
-                        if (allBuzzed) { t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); } else { t.update(roomRef, { players }); }
+                    const idx = players.findIndex(p => p.id === user.uid);
+                    if (idx !== -1 && players[idx].buzzedAt === null) {
+                        players[idx].buzzedAt = Math.max(0, elapsed); 
+                        if (data.isTestMode) { t.update(roomRef, { players }); return; }
+                        if (players.every(p => p.buzzedAt !== null)) { t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); }
+                        else { t.update(roomRef, { players }); }
                     }
                 });
             } catch(e) { console.error("Buzz failed", e); if(btn) btn.innerText = "RETRY"; }
@@ -1008,41 +761,29 @@
         let token = localStorage.getItem('wwts_host_token');
         let playerInstance = null;
 
-        function generateRandomString(length) {
-            let text = '';
-            const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            for (let i = 0; i < length; i++) text += possible.charAt(Math.floor(Math.random() * possible.length));
-            return text;
-        }
-
-        async function generateCodeChallenge(codeVerifier) {
-            const data = new TextEncoder().encode(codeVerifier);
-            const digest = await window.crypto.subtle.digest('SHA-256', data);
-            return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        }
+        function generateRandomString(l) { let t = ''; const p = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'; for (let i = 0; i < l; i++) t += p.charAt(Math.floor(Math.random() * p.length)); return t; }
+        async function generateCodeChallenge(v) { const d = new TextEncoder().encode(v); const digest = await window.crypto.subtle.digest('SHA-256', d); return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 
         window.addEventListener('load', async () => {
              const params = new URLSearchParams(window.location.search);
              const code = params.get('code');
-             if (code) { await exchangeToken(code); } 
+             if (code) await exchangeToken(code); 
              if(token) updateAuthUI();
              const storedId = localStorage.getItem(CLIENT_ID_KEY);
              if(storedId) document.querySelectorAll('.client-id-input').forEach(i => i.value = storedId);
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
-             const rUriDisplay = document.getElementById('redirectUriDisplay');
-             if(rUriDisplay) rUriDisplay.innerText = redirect;
+             const display = document.getElementById('redirectUriDisplay');
+             if(display) display.innerText = redirect;
         });
 
         async function getValidToken() {
             const expiry = parseInt(localStorage.getItem('wwts_token_expiry') || '0');
             const refreshToken = localStorage.getItem('wwts_refresh_token');
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
-
             if (Date.now() > (expiry - 120000) && refreshToken && clientId) {
                 try {
                     const res = await fetch('https://accounts.spotify.com/api/token', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId })
                     });
                     const data = await res.json();
@@ -1059,27 +800,19 @@
         }
 
         function updateAuthUI() {
-             const hStatus = document.getElementById('status-indicator');
-             if(hStatus) {
-                 hStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
-                 hStatus.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
-             }
-             const authPanel = document.getElementById('auth-panel');
-             if(authPanel) authPanel.classList.add('hidden');
-             
-             const pStatus = document.getElementById('player-spotify-status');
-             if(pStatus) {
-                 pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked';
-                 pStatus.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20';
-             }
+             const h = document.getElementById('status-indicator');
+             if(h) { h.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected'; h.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400'; }
+             const panel = document.getElementById('auth-panel');
+             if(panel) panel.classList.add('hidden');
+             const p = document.getElementById('player-spotify-status');
+             if(p) { p.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked'; p.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20'; }
              const pAuth = document.getElementById('player-spotify-auth');
              if(pAuth) pAuth.classList.add('hidden');
         }
 
-        window.startLogin = async (isPlayerLogin = false) => {
-            const inputId = isPlayerLogin ? 'playerClientIdInput' : 'clientIdInput';
-            const clientIdInput = document.getElementById(inputId);
-            const clientId = clientIdInput ? clientIdInput.value.trim() : null;
+        window.startLogin = async (isPlayer = false) => {
+            const id = isPlayer ? 'playerClientIdInput' : 'clientIdInput';
+            const clientId = document.getElementById(id).value.trim();
             if(!clientId) return alert("Enter Client ID");
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             const verifier = generateRandomString(128);
@@ -1104,18 +837,10 @@
                     localStorage.setItem('wwts_host_token', data.access_token); 
                     localStorage.setItem('wwts_refresh_token', data.refresh_token);
                     localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
-                    token = data.access_token; 
-                    window.location.href = redirectUri; 
+                    token = data.access_token; window.location.href = redirectUri; 
                 }
             } catch(e) { console.error(e); }
         }
-
-        window.logout = () => { 
-            localStorage.removeItem('wwts_host_token'); 
-            localStorage.removeItem('wwts_refresh_token'); 
-            localStorage.removeItem('wwts_token_expiry');
-            window.location.reload(); 
-        };
 
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
@@ -1123,143 +848,92 @@
         function initSpotifyPlayer() {
             if(playerInit) return;
             playerInit = true;
-            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: async cb => { 
-                const validToken = await getValidToken();
-                cb(validToken); 
-            }, volume: 0.8 });
+            gameLog("Initializing Spotify Web Playback SDK...");
+            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: async cb => { const t = await getValidToken(); cb(t); }, volume: 0.8 });
             
             playerInstance.addListener('ready', async ({ device_id }) => { 
-                deviceId = device_id; 
+                deviceId = device_id; gameLog("Spotify Player Ready. Device ID: " + deviceId.substring(0, 5) + "...", "success");
                 updateAuthUI(); 
                 try {
                     const tokenToUse = await getValidToken();
                     await fetch('https://api.spotify.com/v1/me/player', {
-                        method: 'PUT',
-                        headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ device_ids: [device_id], play: false })
                     });
+                    gameLog("Playback transferred to this browser");
                 } catch(e) { console.error("Transfer error:", e); }
-                
-                const hScreen = document.getElementById('host-screen');
-                if (hScreen && hScreen.classList.contains('hidden')) {
-                    const primer = document.getElementById('player-audio-primer');
-                    if(primer) primer.classList.remove('hidden');
-                }
+                const h = document.getElementById('host-screen');
+                if (h && h.classList.contains('hidden')) { const p = document.getElementById('player-audio-primer'); if(p) p.classList.remove('hidden'); }
             });
 
-            playerInstance.addListener('authentication_error', ({ message }) => {
-                const pStatus = document.getElementById('player-spotify-status');
-                if(pStatus) {
-                    pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> Re-link Spotify';
-                    pStatus.className = 'flex items-center gap-2 text-[10px] text-red-400 font-bold bg-red-500/10 px-3 py-1 rounded-full border border-red-500/20';
-                    const pAuth = document.getElementById('player-spotify-auth');
-                    if(pAuth) pAuth.classList.remove('hidden');
-                }
-            });
-            
             playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                if (!state.paused) {
-                    localState.localAudioAnchor = Date.now() - state.position;
-                    localState.isSpotifyPlaying = true;
-                } else { localState.isSpotifyPlaying = false; }
-                
-                const hScreen = document.getElementById('host-screen');
-                if (roomId && hScreen && !hScreen.classList.contains('hidden')) {
+                if (!state.paused) { localState.localAudioAnchor = Date.now() - state.position; localState.isSpotifyPlaying = true; } 
+                else { localState.isSpotifyPlaying = false; }
+                const h = document.getElementById('host-screen');
+                if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     if (localState.status !== 'lobby') {
-                        const tName = document.getElementById('track-name');
-                        const aName = document.getElementById('artist-name');
-                        const aArt = document.getElementById('album-art');
-                        if(tName) tName.innerText = track.name;
-                        if(aName) aName.innerText = track.artists[0].name;
-                        if(aArt) aArt.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                        const t = document.getElementById('track-name');
+                        const a = document.getElementById('artist-name');
+                        const img = document.getElementById('album-art');
+                        if(t) t.innerText = track.name;
+                        if(a) a.innerText = track.artists[0].name;
+                        if(img) img.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
-                    if (localState.currentTrackUri !== track.uri) {
-                        await updateDoc(roomRef, { currentTrackUri: track.uri });
-                    }
+                    if (localState.currentTrackUri !== track.uri) await updateDoc(roomRef, { currentTrackUri: track.uri });
                 }
             });
             playerInstance.connect();
         }
 
         window.primeAudio = async () => {
-            if (playerInstance) {
-                await playerInstance.activateElement();
-                const primer = document.getElementById('player-audio-primer');
-                if(primer) primer.classList.add('hidden');
-                handlePlayerAudioSync('idle', false, null);
-            }
+            if (playerInstance) { await playerInstance.activateElement(); document.getElementById('player-audio-primer').classList.add('hidden'); handlePlayerAudioSync('idle', false, null); }
         };
 
         document.getElementById('nextRoundBtn').onclick = async () => {
-             if(playerInstance) { 
-                await playerInstance.activateElement();
-                await playerInstance.setVolume(0.8); 
-                await playerInstance.nextTrack(); 
-             }
+             gameLog("--- Attempting Next Song ---", "warn");
+             if(playerInstance) { await playerInstance.activateElement(); await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); gameLog("Spotify Next command sent"); }
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const slider = document.getElementById('cutTimeSlider');
              const cutTime = slider ? parseInt(slider.value) : 10;
              const snap = await getDoc(roomRef);
-             if(snap.exists()) {
-                 const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
-                 localState.localAudioAnchor = null;
-                 localState.localHasPaused = false;
-                 await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: Date.now(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
-             }
+             const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+             localState.localAudioAnchor = null; localState.localHasPaused = false;
+             await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: Date.now(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
+             gameLog("Round Started via Next Song", "success");
         };
         
-        const searchInput = document.getElementById('search-input');
         const searchBtn = document.getElementById('search-btn');
-        if(searchInput) searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchBtn.click(); });
-
         if(searchBtn) {
             searchBtn.onclick = async () => {
-                const query = searchInput.value;
+                const query = document.getElementById('search-input').value;
                 const tokenToUse = await getValidToken();
-                if(!tokenToUse) return alert("Log in first");
                 const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${tokenToUse}` } });
                 const data = await res.json();
                 const results = document.getElementById('results');
-                if (!data.playlists || !data.playlists.items) { if(results) results.innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>'; return; }
-                if(results) {
-                    results.innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
-                        const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
-                        const safeName = p.name.replace(/'/g, "\\'"); 
-                        return `
-                        <div onclick="selectPlaylist('${p.uri}', '${safeName}', '${imgUrl}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
-                            <img src="${imgUrl}" class="w-10 h-10 rounded shadow object-cover">
-                            <div class="min-w-0">
-                                <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
-                                <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
-                            </div>
-                        </div>`}).join('');
-                }
+                if (!data.playlists || !data.playlists.items) return;
+                results.innerHTML = data.playlists.items.filter(p => p !== null).map(p => `
+                    <div onclick="selectPlaylist('${p.uri}', '${p.name.replace(/'/g, "\\'")}', '${p.images?.[0]?.url || ''}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group">
+                        <img src="${p.images?.[0]?.url || ''}" class="w-10 h-10 rounded shadow object-cover">
+                        <div class="min-w-0"><div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div><div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div></div>
+                    </div>`).join('');
             };
         }
 
         const hSlider = document.getElementById('cutTimeSlider');
         if(hSlider) {
             hSlider.addEventListener('input', (e) => {
-                 const val = e.target.value;
-                 const cDisp = document.getElementById('cutTimeDisplay');
-                 const cMarker = document.getElementById('cut-marker');
-                 if(cDisp) cDisp.innerText = val + 's';
-                 if(cMarker) {
-                    const pos = (val / 60) * 100;
-                    cMarker.style.left = `${pos}%`;
-                 }
+                 document.getElementById('cutTimeDisplay').innerText = e.target.value + 's';
+                 const m = document.getElementById('cut-marker');
+                 if(m) m.style.left = `${(e.target.value / 60) * 100}%`;
             });
-            
             hSlider.addEventListener('change', async (e) => {
-                const val = parseInt(e.target.value);
                 const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                await updateDoc(roomRef, { autoCutTime: val });
+                await updateDoc(roomRef, { autoCutTime: parseInt(e.target.value) });
             });
         }
-
     </script>
 </head>
 <body class="p-4 h-screen overflow-hidden flex flex-col">
@@ -1314,7 +988,7 @@
         </header>
         <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
             <div class="flex-1 pr-4">
-                <p class="text-[10px] font-bold text-green-400 leading-tight">Hear music on this device? (Spotify Premium)</p>
+                <p class="text-[10px] font-bold text-green-400 leading-tight">Hear music on this device?</p>
                 <input id="playerClientIdInput" class="client-id-input w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] mt-1" placeholder="Paste Client ID">
             </div>
             <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase shadow-lg">Link</button>
@@ -1325,9 +999,7 @@
                 <h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter">YOU WON!</h2>
                 <p class="text-xl text-white font-bold">The host awarded you a point!</p>
                 <div class="mt-8 text-sm text-gray-400 animate-pulse">Waiting for next song...</div>
-                <div class="confetti" style="left: 10%; animation-delay: 0s;"></div><div class="confetti" style="left: 30%; animation-delay: 1s;"></div><div class="confetti" style="left: 50%; animation-delay: 0.5s;"></div><div class="confetti" style="left: 70%; animation-delay: 1.5s;"></div><div class="confetti" style="left: 90%; animation-delay: 0.2s;"></div>
             </div>
-            <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20"><div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div></div>
             <div id="player-status" class="text-xl text-gray-400 mb-2 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
             <div class="mb-8 flex flex-col items-center z-10">
                 <div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div>
@@ -1342,60 +1014,73 @@
     </div>
 
     <!-- HOST SCREEN -->
-    <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[350px_1fr] gap-6 max-w-7xl mx-auto w-full h-full">
+    <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 max-w-7xl mx-auto w-full h-full">
         <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <div class="glass p-4 rounded-xl">
+            <div class="glass p-4 rounded-xl shrink-0">
                 <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
                 <div class="flex justify-between items-end mt-2">
                     <div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400"><span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline</div>
                     <div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span></div>
                 </div>
             </div>
-            <div class="glass p-4 rounded-xl space-y-4">
+            
+            <div class="glass p-3 rounded-xl space-y-3 shrink-0">
                 <div id="auth-panel">
                      <button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded">Spotify Login</button>
                      <input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
                 </div>
-                <div class="flex flex-col gap-3 border-t border-white/10 pt-4">
-                    <div class="flex justify-between items-center"><label class="text-xs font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div>
-                    <div class="flex justify-between items-center"><label class="text-xs font-bold uppercase text-yellow-500">Sync Test Mode</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div>
-                </div>
+                <div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div>
+                <div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-yellow-500">Sync Test Mode</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div>
                 <div class="space-y-1">
-                    <div class="flex justify-between text-xs text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div>
+                    <div class="flex justify-between text-[10px] text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div>
                     <input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 </div>
             </div>
-            <div class="glass p-4 rounded-xl flex flex-col h-40"><div id="host-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div></div>
-            <div class="glass p-4 rounded-xl flex-1 flex flex-col min-h-0">
-                <div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button></div>
-                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll"></div>
+
+            <!-- LIVE DEBUG LOG -->
+            <div id="debug-log-container" class="glass p-2 rounded-xl flex flex-col h-32 shrink-0">
+                <h3 class="text-[9px] font-black uppercase text-gray-500 border-b border-white/5 pb-1 mb-1">Live Debug Log</h3>
+                <div id="debug-log-content" class="overflow-y-auto custom-scroll flex-1 pr-1 text-[9px] font-mono leading-tight"></div>
+            </div>
+
+            <div class="glass p-3 rounded-xl flex flex-col h-32 shrink-0"><div id="host-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div></div>
+            
+            <div class="glass p-3 rounded-xl flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-2 rounded text-xs">🔍</button></div>
+                <div id="results" class="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scroll"></div>
             </div>
         </div>
-        <div class="flex flex-col gap-4 h-full overflow-hidden relative">
-            <div class="glass p-6 rounded-xl border-t-4 border-yellow-500 relative overflow-hidden">
-                <div class="flex gap-6 items-center relative z-10">
-                    <div id="album-art" class="w-24 h-24 bg-black/40 rounded-lg flex items-center justify-center text-4xl shadow-lg shrink-0 overflow-hidden">🎵</div>
+        
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            <div class="glass p-4 rounded-xl border-t-4 border-yellow-500 shrink-0">
+                <div class="flex gap-4 items-center">
+                    <div id="album-art" class="w-20 h-20 bg-black/40 rounded-lg flex items-center justify-center shrink-0 overflow-hidden text-2xl">🎵</div>
                     <div class="flex-1 min-w-0">
-                        <h2 id="track-name" class="text-3xl font-black leading-tight truncate">Waiting...</h2>
-                        <p id="artist-name" class="text-xl text-gray-400 truncate">---</p>
+                        <div id="round-status" class="text-[10px] uppercase font-black text-yellow-500 mb-1 tracking-widest">Lobby</div>
+                        <h2 id="track-name" class="text-2xl font-black leading-tight truncate">Waiting...</h2>
+                        <p id="artist-name" class="text-sm text-gray-400 truncate">---</p>
                     </div>
-                    <div class="text-right">
-                        <div id="gameTimer" class="text-5xl font-mono font-bold text-white tabular-nums">0.00</div>
-                        <div class="text-xs text-gray-500 uppercase mt-1">Audio Sync Time</div>
+                    <div class="text-right shrink-0">
+                        <div id="gameTimer" class="text-4xl font-mono font-bold text-white tabular-nums">0.00</div>
+                        <div class="text-[9px] text-gray-500 uppercase mt-0.5">Audio Sync</div>
                     </div>
                 </div>
-                <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
-                    <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-xl opacity-80 pointer-events-none transition-all duration-75"></div>
+                <div id="timeline-container" class="mt-4 relative h-6 bg-black/30 rounded-lg w-full overflow-visible">
+                    <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-lg opacity-80 pointer-events-none transition-all duration-75"></div>
                     <div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div>
-                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 z-0 transition-all duration-300 pointer-events-none" style="left: 16%;"></div>
+                    <div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none" style="left: 16%;"></div>
                 </div>
             </div>
-            <div class="grid grid-cols-3 gap-4">
-                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">▶ Start Round</button>
-                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">⏭ Next Song</button>
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
+            
+            <div class="grid grid-cols-3 gap-3 shrink-0">
+                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">▶ Start Round</button>
+                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">⏭ Next Song</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3.5 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 text-sm uppercase" disabled>🔊 Reveal</button>
             </div>
-            <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4"></div></div>
+            
+            <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll">
+                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div>
+            </div>
         </div>
     </div>
 </body>
