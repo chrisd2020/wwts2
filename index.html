@@ -136,6 +136,20 @@
             return null;
         }
 
+        window.saveManualConfig = () => {
+            const input = document.getElementById('manualConfigInput');
+            const configText = input ? input.value.trim() : "";
+            if (!configText) return alert("Please paste a valid configuration.");
+            try {
+                const parsed = JSON.parse(configText);
+                if (!parsed.apiKey || !parsed.projectId) throw new Error("Invalid config format");
+                localStorage.setItem('wwts_firebase_config', configText);
+                window.location.reload();
+            } catch (e) {
+                alert("Error parsing config: " + e.message);
+            }
+        };
+
         window.clearFirebaseConfig = () => {
             localStorage.removeItem('wwts_active_room_id');
             localStorage.removeItem('wwts_firebase_config');
@@ -149,8 +163,6 @@
                 const setup = document.getElementById('lobby-setup');
                 if(loading) loading.classList.add('hidden');
                 if(setup) setup.classList.remove('hidden');
-                // Fallback to lobby-main if setup doesn't exist
-                if(!setup) showMainLobby();
                 return;
             }
 
@@ -1063,8 +1075,15 @@
 
         <div id="lobby-setup" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5 text-center">
             <h2 class="text-xl font-bold text-white uppercase">Configuration Required</h2>
-            <p class="text-sm text-gray-400">Firebase configuration is missing or pending. Please check the Canvas environment variables.</p>
-            <button onclick="showMainLobby()" class="block w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-4 rounded-full transition uppercase text-sm">Enter Demo Mode</button>
+            <p class="text-sm text-gray-400 mb-4">Firebase configuration is missing. Paste your JSON config below to enable online play.</p>
+            
+            <textarea id="manualConfigInput" placeholder='{"apiKey": "...", "projectId": "...", ...}' class="w-full h-32 bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono text-gray-300 focus:border-yellow-400 outline-none mb-4 custom-scroll"></textarea>
+            
+            <div class="flex flex-col gap-3">
+                <button onclick="saveManualConfig()" class="block w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-4 rounded-full transition uppercase text-sm">Initialize Firebase</button>
+                <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
+                <button onclick="showMainLobby()" class="block w-full bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-full transition uppercase text-xs border border-white/10">Try Demo Mode</button>
+            </div>
         </div>
 
         <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
@@ -1077,6 +1096,7 @@
             </div>
             <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
             <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-black text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
+            <button onclick="clearFirebaseConfig()" class="block w-full text-[10px] text-gray-600 hover:text-gray-400 underline uppercase mt-4">Change Firebase Config</button>
         </div>
     </div>
 
@@ -1125,6 +1145,6 @@
             <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
         </div>
     </div>
-    <div id="host-scoreboard" class="hidden"></div> <!-- Placeholder for scoreboard data if needed globally -->
+    <div id="host-scoreboard" class="hidden"></div>
 </body>
 </html>
