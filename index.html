@@ -101,9 +101,8 @@
             currentTrackUri: null,
             isTestMode: false,
             
-            // Accurate Playback Tracking
-            spotifyPos: 0,
-            lastSpotifyUpdate: 0,
+            // Client-Side Accurate Anchor
+            clientAudioStartTime: null, // Date.now() when audio hits position 0
             isSpotifyPlaying: false
         };
 
@@ -348,6 +347,11 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
+                // Reset anchor on new rounds
+                if (localState.status === 'lobby') {
+                    localState.clientAudioStartTime = null;
+                }
+
                 // --- REMOTE AUDIO SYNC LOGIC ---
                 if (role === 'player' && playerInstance && localState.currentTrackUri) {
                     handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri);
@@ -363,14 +367,11 @@
         async function handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
 
-            // In Sync Test Mode, we allow playback during cut phases
             const shouldPlayOnClient = (localState.status === 'playing' && (!localState.hasCut || localState.isTestMode));
 
             if (shouldPlayOnClient) {
                 const targetPosition = Date.now() - localState.startTime;
                 
-                // Play if we just entered the listening state, changed tracks, or just un-cut
-                // In Test Mode, if it's supposed to play but is paused, we also restart/resume
                 const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
                 const needsTestUncut = (oldHasCut && !localState.isTestMode);
                 const isIncorrectlyPaused = localState.isTestMode && !localState.isSpotifyPlaying && localState.status === 'playing';
@@ -384,7 +385,6 @@
                     } catch(e) { console.error("Sync Play Error:", e); }
                 }
             } else {
-                // Pause if round is over, host is doing a reveal, or music is currently cut (and not in test mode)
                 playerInstance.pause();
             }
         }
@@ -413,7 +413,6 @@
                 document.getElementById('cut-marker').style.left = `${cutPos}%`;
             }
 
-            // Update Sync Test Mode checkbox if not focused
             const testToggle = document.getElementById('syncTestToggle');
             if (testToggle) testToggle.checked = data.isTestMode || false;
 
@@ -549,22 +548,13 @@
                     return; 
                 }
                 
-                let currentPosSeconds = 0;
-                
-                // Global Clock
+                // Host/Global Game Clock
                 let elapsed = 0;
                 if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
                     elapsed = Math.max(0, elapsed);
                 } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     elapsed = localState.pauseTime;
-                }
-
-                // Accurate Interpolated Spotify Position (used for Player sync)
-                if (localState.isSpotifyPlaying) {
-                    currentPosSeconds = (localState.spotifyPos + (Date.now() - localState.lastSpotifyUpdate)) / 1000;
-                } else {
-                    currentPosSeconds = localState.spotifyPos / 1000;
                 }
 
                 // Update Host Timer
@@ -583,15 +573,12 @@
                     
                     if (me && me.buzzedAt !== null) {
                         pElapsed = me.buzzedAt;
+                    } else if (localState.clientAudioStartTime) {
+                        // FIX: Once playback starts, the client timer anchor is set.
+                        // This continues to count up even if Spotify is paused (the CUT).
+                        pElapsed = (Date.now() - localState.clientAudioStartTime) / 1000;
                     } else {
-                        // FIX: If we are in Sync Test Mode and the local Spotify player stops/pauses
-                        // (perhaps due to account conflict or cutoff logic), we fallback to the global 
-                        // game clock so the visual timer doesn't freeze at the cut point.
-                        if (localState.isTestMode && localState.status === 'playing' && !localState.isSpotifyPlaying) {
-                            pElapsed = elapsed;
-                        } else {
-                            pElapsed = Math.max(0, currentPosSeconds);
-                        }
+                        pElapsed = 0;
                     }
                     
                     if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
@@ -720,6 +707,7 @@
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
              if(playerInstance) playerInstance.pause();
+             localState.clientAudioStartTime = null;
         };
 
         window.awardWin = async (pid) => {
@@ -743,6 +731,7 @@
                     });
                 });
                 if(playerInstance) playerInstance.pause();
+                localState.clientAudioStartTime = null;
              } catch(e) { console.error("Award win error", e); }
         };
 
@@ -920,17 +909,13 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // USE ACCURATE INTERNAL SPOTIFY POSITION
+            // ACCURATE BUZZER TIMESTAMP
             let buzzedAtSeconds = 0;
-            if (localState.isSpotifyPlaying) {
-                buzzedAtSeconds = (localState.spotifyPos + (Date.now() - localState.lastSpotifyUpdate)) / 1000;
-            } else {
-                buzzedAtSeconds = localState.spotifyPos / 1000;
+            if (localState.clientAudioStartTime) {
+                buzzedAtSeconds = (Date.now() - localState.clientAudioStartTime) / 1000;
             }
             
-            // Correct for small network/processing overhead between hit and send
             const elapsed = Math.max(0, buzzedAtSeconds);
-            
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 await runTransaction(db, async (t) => {
@@ -1060,9 +1045,10 @@
                 if (!state) return;
                 const track = state.track_window.current_track;
                 
-                // --- ACCURATE POSITION TRACKING ---
-                localState.spotifyPos = state.position;
-                localState.lastSpotifyUpdate = Date.now();
+                // TRACK AUDIO START ANCHOR
+                if (!state.paused && localState.clientAudioStartTime === null) {
+                    localState.clientAudioStartTime = Date.now() - state.position;
+                }
                 localState.isSpotifyPlaying = !state.paused;
 
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
