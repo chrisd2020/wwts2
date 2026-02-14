@@ -544,8 +544,8 @@
                 if(!localState.timerInterval) startLoop();
                 roundStatus.innerText = data.status === 'revealing' ? "Revealing" : "Paused";
                 revealBtn.disabled = false;
-                revealBtn.innerText = data.status === 'revealing' ? "Pause Reveal" : "Resume Reveal";
-                revealBtn.className = data.status === 'revealing' ? "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow w-full" : "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
+                revealBtn.innerText = "Reveal Logic"; // Simplified for logic check
+                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 if(timelineContainer) timelineContainer.classList.add('interactive');
             } else {
@@ -784,7 +784,7 @@
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
                     const data = snap.data();
-                    if (!data.hasCut) return; 
+                    if (!data.hasCut && !data.isTestMode) return; 
                     const players = data.players;
                     const idx = players.findIndex(p => p.id === user.uid);
                     if (idx !== -1 && players[idx].buzzedAt === null) {
@@ -1017,7 +1017,7 @@
             
             if (!statusEl || !buzzBtn) return;
             if (data.status === 'playing') {
-                if (data.hasCut) {
+                if (data.hasCut || data.isTestMode) {
                     statusEl.innerText = data.isTestMode ? "TEST SYNC..." : "SING!";
                     statusEl.className = data.isTestMode ? "text-2xl font-bold text-yellow-400" : "text-4xl font-black text-red-500";
                     const myData = data.players.find(p => p.id === user.uid);
