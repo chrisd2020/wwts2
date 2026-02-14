@@ -1061,10 +1061,20 @@
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
+                    // --- SKIP LOGIC FIX ---
                     if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
-                         // Logic handled by pendingRoundStart flow now, but keeping for safety if next is manual
-                         // Actually, nextRoundBtn just goes to Lobby. So this block is for auto-detect?
-                         // We can simplify this if we strictly use hostStartRound.
+                         localState.isPendingNext = false;
+                         localState.skippedTrackUri = null;
+                         
+                         const t = document.getElementById('track-name');
+                         if(t) t.innerText = track.name;
+                         const a = document.getElementById('artist-name');
+                         if(a) a.innerText = track.artists[0].name;
+                         const art = document.getElementById('album-art');
+                         if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+
+                         await updateDoc(roomRef, { currentTrackUri: track.uri });
+                         gameLog("Skipped to: " + track.name, "success");
                     }
 
                     if (localState.status !== 'lobby' && !localState.isPendingNext && localState.status !== 'buffering') {
@@ -1082,206 +1092,3 @@
             });
             playerInstance.connect();
         }
-
-        window.primeAudio = async () => {
-            if (playerInstance) { await playerInstance.activateElement(); document.getElementById('player-audio-primer').classList.add('hidden'); handlePlayerAudioSync('idle', false, null); }
-        };
-
-        function updatePlayerUI(data) {
-            const buzzBtn = document.getElementById('player-buzz-btn'); const statusEl = document.getElementById('player-status');
-            const scoreboard = document.getElementById('player-scoreboard'); const winOverlay = document.getElementById('win-overlay');
-            if (data.status === 'playing' || data.status === 'revealing') { if (!localState.timerInterval) startLoop(); }
-            
-            if (data.lastWinnerId === user.uid) { 
-                if(winOverlay && winOverlay.classList.contains('hidden')) {
-                    winOverlay.classList.remove('hidden'); 
-                    triggerConfetti();
-                    if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
-                }
-            } else { 
-                if(winOverlay) winOverlay.classList.add('hidden'); 
-            }
-            
-            if (!statusEl || !buzzBtn) return;
-            if (data.status === 'playing') {
-                if (data.hasCut || data.isTestMode) {
-                    statusEl.innerText = data.isTestMode ? "TEST SYNC..." : "SING!";
-                    statusEl.className = data.isTestMode ? "text-2xl font-bold text-yellow-400" : "text-4xl font-black text-red-500";
-                    const myData = data.players.find(p => p.id === user.uid);
-                    if (myData && myData.buzzedAt !== null) { buzzBtn.innerText = "BUZZED!"; buzzBtn.disabled = true; buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]"; } 
-                    else { buzzBtn.disabled = false; buzzBtn.innerText = "BUZZ!"; buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform"; }
-                } else {
-                    statusEl.innerText = "LISTEN..."; statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
-                    buzzBtn.disabled = true; buzzBtn.innerText = "LISTEN"; buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
-                }
-            } else if (data.status === 'buffering') {
-                statusEl.innerText = "Get Ready..."; 
-                statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
-                buzzBtn.disabled = true; buzzBtn.innerText = "WAIT"; 
-                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50";
-            } else if (data.status === 'complete') {
-                statusEl.innerText = "Round Over"; buzzBtn.innerText = "DONE"; buzzBtn.disabled = true;
-            } else {
-                statusEl.innerText = "Waiting for Host..."; buzzBtn.disabled = true; buzzBtn.innerText = "WAIT";
-            }
-            if (scoreboard) {
-                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
-                scoreboard.innerHTML = sorted.map(p => `<div class="flex justify-between p-2 border-b border-white/5 last:border-0"><span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">${p.id === user.uid ? '⭐ ' : ''}${p.name}</span><span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span></div>`).join('');
-            }
-        }
-
-        document.getElementById('nextRoundBtn').onclick = async () => {
-             gameLog("⏭ Skipping Track...");
-             
-             if (playerInstance) {
-                const state = await playerInstance.getCurrentState();
-                localState.skippedTrackUri = state?.track_window?.current_track?.uri || null;
-             }
-             
-             localState.isPendingNext = true;
-             localState.localAudioAnchor = null; 
-             localState.localHasPaused = false;
-
-             const t = document.getElementById('track-name');
-             if(t) t.innerText = "Skipping...";
-             const a = document.getElementById('artist-name');
-             if(a) a.innerText = "Finding new track...";
-             const art = document.getElementById('album-art');
-             if(art) art.innerHTML = `<div class="animate-pulse bg-white/10 w-full h-full"></div>`;
-
-             if(playerInstance) { 
-                 await playerInstance.activateElement(); 
-                 await playerInstance.setVolume(0); 
-                 await playerInstance.nextTrack(); 
-                 await playerInstance.resume(); 
-             }
-             
-             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             await updateDoc(roomRef, { 
-                 status: 'lobby', 
-                 currentTrackUri: null,
-                 lastWinnerId: null
-             });
-        };
-        
-        document.getElementById('search-btn').onclick = async () => {
-            const query = document.getElementById('search-input').value; const tokenToUse = await getValidToken();
-            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${tokenToUse}` } });
-            const data = await res.json();
-            if (data.playlists?.items) {
-                document.getElementById('results').innerHTML = data.playlists.items.filter(p => p !== null).map(p => `<div onclick="selectPlaylist('${p.uri}', '${p.name.replace(/'/g, "\\'")}', '${p.images?.[0]?.url || ''}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group"><img src="${p.images?.[0]?.url || ''}" class="w-10 h-10 rounded shadow object-cover"><div class="min-w-0"><div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div><div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div></div></div>`).join('');
-            }
-        };
-
-        const hSlider = document.getElementById('cutTimeSlider');
-        if(hSlider) {
-            hSlider.addEventListener('input', (e) => {
-                 document.getElementById('cutTimeDisplay').innerText = e.target.value + 's';
-                 document.getElementById('cut-marker').style.left = `${(e.target.value / 60) * 100}%`;
-            });
-            hSlider.addEventListener('change', async (e) => {
-                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                await updateDoc(roomRef, { autoCutTime: parseInt(e.target.value) });
-            });
-        }
-    </script>
-</head>
-<body class="p-4 h-screen overflow-hidden flex flex-col">
-
-    <!-- LOBBY SCREEN -->
-    <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
-        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2 text-center uppercase">Win When They're Singing</h1>
-        <p class="text-gray-400 mb-8 font-bold tracking-widest uppercase text-xs">Multiplayer Edition</p>
-        
-        <div id="lobby-loading" class="text-center">
-            <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
-            <p class="text-gray-400 uppercase text-xs font-black">Connecting...</p>
-        </div>
-
-        <div id="lobby-setup" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5 text-center">
-            <h2 class="text-xl font-bold text-white uppercase">Configuration Required</h2>
-            <p class="text-sm text-gray-400 mb-4">Firebase configuration is missing. Paste your JSON config below to enable online play.</p>
-            
-            <textarea id="manualConfigInput" placeholder='{"apiKey": "...", "projectId": "...", ...}' class="w-full h-32 bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono text-gray-300 focus:border-yellow-400 outline-none mb-4 custom-scroll"></textarea>
-            
-            <div class="flex flex-col gap-3">
-                <button onclick="saveManualConfig()" class="block w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-4 rounded-full transition uppercase text-sm">Initialize Firebase</button>
-                <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
-                <button onclick="showMainLobby()" class="block w-full bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-full transition uppercase text-xs border border-white/10">Try Demo Mode</button>
-            </div>
-        </div>
-
-        <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
-            <div class="space-y-3">
-                <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
-                <div class="flex gap-2">
-                    <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
-                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">Join Game</button>
-                </div>
-            </div>
-            <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
-            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-black text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
-            <button onclick="clearFirebaseConfig()" class="block w-full text-[10px] text-gray-600 hover:text-gray-400 underline uppercase mt-4 text-center">Change Firebase Config</button>
-        </div>
-    </div>
-
-    <!-- PLAYER SCREEN -->
-    <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
-        <div id="player-audio-primer" class="hidden fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md">
-            <div class="text-4xl mb-4">🔊</div>
-            <h2 class="text-2xl font-bold text-white mb-2 uppercase">Spotify Linked!</h2>
-            <p class="text-sm text-gray-400 mb-6">Browsers require a tap to enable synchronized audio.</p>
-            <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
-        </div>
-        <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
-        <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
-            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
-            <div class="flex items-center gap-4">
-                <div class="text-right">
-                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
-                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
-                </div>
-                <button onclick="leaveRoom()" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">
-                    Leave
-                </button>
-            </div>
-        </header>
-        <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
-            <input id="playerClientIdInput" class="client-id-input w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] mr-2" placeholder="Paste Client ID">
-            <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase">Link</button>
-        </div>
-        <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
-            <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
-                <div class="text-8xl mb-4">🏆</div><h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter uppercase">You Won!</h2><p class="text-xl text-white font-bold">The host awarded you a point!</p>
-            </div>
-            <div id="player-status" class="text-xl text-gray-400 mb-2 font-bold tracking-wide z-10 text-center uppercase">Waiting...</div>
-            <div class="mb-8 flex flex-col items-center z-10"><div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div><div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Audio Position</div></div>
-            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">WAIT</button>
-        </main>
-        <section class="bg-black/40 backdrop-blur-lg p-4 border-t border-white/10 max-h-48 flex flex-col"><h3 class="text-[10px] uppercase font-black tracking-widest text-gray-500 mb-2">Live Scoreboard</h3><div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div></section>
-    </div>
-
-    <!-- HOST SCREEN -->
-    <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 max-w-7xl mx-auto w-full h-full">
-        <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <div class="glass p-4 rounded-xl shrink-0"><h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block uppercase">Host</span></h1><div class="flex justify-between items-end mt-2"><div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400"><span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline</div><div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span></div></div></div>
-            <div class="glass p-3 rounded-xl space-y-3 shrink-0"><div id="auth-panel"><button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded uppercase">Spotify Login</button><input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-yellow-500">Sync Test</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div><div class="space-y-1"><div class="flex justify-between text-[10px] text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div><input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"></div></div>
-            <div id="debug-log-container" class="glass p-2 rounded-xl flex flex-col h-32 shrink-0"><h3 class="text-[9px] font-black uppercase text-gray-500 border-b border-white/5 pb-1 mb-1">Live Log</h3><div id="debug-log-content" class="overflow-y-auto custom-scroll flex-1 pr-1 text-[9px] font-mono leading-tight"></div></div>
-            <div class="glass p-3 rounded-xl flex-1 flex flex-col min-h-0 overflow-hidden"><div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-2 rounded text-xs">🔍</button></div><div id="results" class="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scroll"></div></div>
-        </div>
-        <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <div class="glass p-4 rounded-xl border-t-4 border-yellow-500 shrink-0">
-                <div class="flex gap-4 items-center"><div id="album-art" class="w-20 h-20 bg-black/40 rounded-lg flex items-center justify-center shrink-0 overflow-hidden text-2xl">🎵</div><div class="flex-1 min-w-0"><div id="round-status" class="text-[10px] uppercase font-black text-yellow-500 mb-1 tracking-widest">Lobby</div><h2 id="track-name" class="text-2xl font-black leading-tight truncate uppercase">Waiting...</h2><p id="artist-name" class="text-sm text-gray-400 truncate">---</p></div><div class="text-right shrink-0"><div id="gameTimer" class="text-4xl font-mono font-bold text-white tabular-nums">0.00</div><div class="text-[9px] text-gray-500 uppercase mt-0.5">Sync</div></div></div>
-                <div id="timeline-container" class="mt-4 relative h-6 bg-black/30 rounded-lg w-full overflow-visible touch-none"><div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-lg opacity-80 pointer-events-none transition-all duration-75"></div><div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div><div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none" style="left: 16%;"></div></div>
-            </div>
-            <div class="grid grid-cols-3 gap-3 shrink-0">
-                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full uppercase text-sm">Start Round</button>
-                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm">Next Song</button>
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 w-full uppercase text-sm" disabled>Reveal Music</button>
-            </div>
-            <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
-        </div>
-    </div>
-    <div id="host-scoreboard" class="hidden"></div>
-</body>
-</html>
