@@ -78,7 +78,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, arrayUnion, serverTimestamp, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE SETUP ---
@@ -103,7 +103,8 @@
             
             // localAudioAnchor: Date.now() minus Spotify position in ms.
             localAudioAnchor: null, 
-            isSpotifyPlaying: false
+            isSpotifyPlaying: false,
+            localHasPaused: false // Prevents multiple pause triggers in a round
         };
 
         function getFirebaseConfig() {
@@ -134,7 +135,16 @@
                 app = initializeApp(config);
                 auth = getAuth(app);
                 db = getFirestore(app);
-                await signInAnonymously(auth);
+                
+                // Auth Rule 3 Implementation
+                const initAuth = async () => {
+                  if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                  } else {
+                    await signInAnonymously(auth);
+                  }
+                };
+                await initAuth();
                 
                 onAuthStateChanged(auth, async (u) => {
                     user = u;
@@ -143,7 +153,7 @@
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         
                         if (savedRoomId) {
-                            const appId = window.__app_id || 'wwts-game';
+                            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
                             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
                             const snap = await getDoc(roomRef);
                             
@@ -213,7 +223,7 @@
             btn.disabled = true;
 
             const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             roomId = newRoomId;
             
             try {
@@ -246,7 +256,7 @@
             if(!isFirebaseReady) return alert("Connecting to server...");
             const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
             const name = document.getElementById('playerNameInput').value.trim();
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
@@ -297,7 +307,7 @@
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
@@ -352,6 +362,7 @@
                 const roundRestarted = (oldStatus !== 'playing' && localState.status === 'playing');
                 if (localState.status === 'lobby' || songChanged || roundRestarted) {
                     localState.localAudioAnchor = null;
+                    localState.localHasPaused = false;
                 }
 
                 // --- REMOTE AUDIO SYNC LOGIC ---
@@ -369,7 +380,8 @@
         async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
 
-            const shouldPlayOnClient = (localState.status === 'playing' && (!hasCut || localState.isTestMode));
+            // Notice: We keep playing until we locally reach the cut time or the round ends
+            const shouldPlayOnClient = (localState.status === 'playing' && (!localState.localHasPaused || localState.isTestMode));
 
             if (shouldPlayOnClient) {
                 const targetPosition = Math.max(0, Date.now() - localState.startTime);
@@ -586,19 +598,48 @@
                      highlightClosest(audioElapsed);
                 }
                 
-                if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && audioElapsed >= localState.autoCutTime) {
-                    window.hostTriggerCut();
+                // --- LOCAL AUTO-CUT LOGIC ---
+                // Triggered individually on each device based on its unique audio position
+                if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
+                    if (!localState.localHasPaused) {
+                        localTriggerAudioCut();
+                        
+                        // If this is the host, also trigger the global state change for buzzing
+                        if (roomId && !document.getElementById('host-screen').classList.contains('hidden') && !localState.hasCut) {
+                            if (document.getElementById('autoCutToggle').checked) {
+                                window.hostTriggerCut();
+                            }
+                        }
+                    }
                 }
+
                 localState.timerInterval = requestAnimationFrame(loop);
             }
             localState.timerInterval = requestAnimationFrame(loop);
+        }
+
+        async function localTriggerAudioCut() {
+            if (localState.localHasPaused) return;
+            localState.localHasPaused = true;
+            
+            if (localState.isTestMode) return;
+
+            let vol = 0.8;
+            const fade = setInterval(() => {
+                vol = Math.max(0, vol - 0.05);
+                if(playerInstance) playerInstance.setVolume(vol);
+                if(vol <= 0) {
+                    clearInterval(fade);
+                    if(playerInstance) playerInstance.pause();
+                }
+            }, 50);
         }
 
         // --- HOST ACTIONS ---
         
         window.selectPlaylist = async (uri, name, img) => {
              if(!deviceId) return alert("Player not ready.");
-             const appId = window.__app_id || 'wwts-game'; 
+             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
              document.getElementById('track-name').innerText = name;
@@ -607,7 +648,7 @@
         };
 
         window.hostStartRound = async () => {
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
             const snap = await getDoc(roomRef);
@@ -615,6 +656,7 @@
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
 
             localState.localAudioAnchor = null;
+            localState.localHasPaused = false;
 
             await updateDoc(roomRef, {
                 status: 'playing',
@@ -647,38 +689,31 @@
         };
 
         window.hostTriggerCut = async () => {
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { hasCut: true });
             
-            if (localState.isTestMode) return;
-
-            let vol = 0.8;
-            const fade = setInterval(() => {
-                vol = Math.max(0, vol - 0.05);
-                if(playerInstance) playerInstance.setVolume(vol);
-                if(vol <= 0) {
-                    clearInterval(fade);
-                    if(playerInstance) playerInstance.pause();
-                }
-            }, 50);
+            // Note: Audio pause is now handled locally in the loop for all users
+            if (localState.role === 'host') {
+                localTriggerAudioCut();
+            }
         };
 
         window.toggleSyncTest = async (e) => {
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { isTestMode: e.checked });
         };
 
         window.hostEndRound = async () => {
-             const appId = window.__app_id || 'wwts-game'; 
+             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
              await updateDoc(roomRef, { status: 'complete', pauseTime: audioTime });
         };
 
         window.hostToggleReveal = async () => {
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             if (localState.status === 'revealing') {
                 const audioTime = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : localState.pauseTime;
@@ -701,18 +736,19 @@
         };
 
         window.hostResetRound = async () => {
-             const appId = window.__app_id || 'wwts-game'; 
+             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const snap = await getDoc(roomRef);
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
              localState.localAudioAnchor = null;
+             localState.localHasPaused = false;
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
              if(playerInstance) playerInstance.pause();
         };
 
         window.awardWin = async (pid) => {
-             const appId = window.__app_id || 'wwts-game'; 
+             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              try {
                 await runTransaction(db, async (t) => {
@@ -732,12 +768,13 @@
                     });
                 });
                 localState.localAudioAnchor = null;
+                localState.localHasPaused = false;
                 if(playerInstance) playerInstance.pause();
              } catch(e) { console.error("Award win error", e); }
         };
 
         window.removePlayer = async (pid) => {
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 const snap = await getDoc(roomRef);
@@ -751,7 +788,7 @@
 
         window.playerLeave = async () => {
             if (!user || !roomId) return;
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 const snap = await getDoc(roomRef);
@@ -785,7 +822,7 @@
             if (localState.isDragging) {
                 localState.isDragging = false;
                 const seconds = getScrubTime(e);
-                const appId = window.__app_id || 'wwts-game'; 
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                 
                 localState.localAudioAnchor = Date.now() - (seconds * 1000);
@@ -916,7 +953,7 @@
             let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
             
-            const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            const roomRef = doc(db, 'artifacts', (typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
@@ -976,7 +1013,6 @@
             const refreshToken = localStorage.getItem('wwts_refresh_token');
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
 
-            // Refresh if token is expired or expires in the next 2 minutes
             if (Date.now() > (expiry - 120000) && refreshToken && clientId) {
                 try {
                     const res = await fetch('https://accounts.spotify.com/api/token', {
@@ -1108,7 +1144,7 @@
                 }
 
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
-                    const appId = window.__app_id || 'wwts-game'; 
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
                     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
                     if (localState.status !== 'lobby') {
@@ -1135,13 +1171,14 @@
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
-             const appId = window.__app_id || 'wwts-game'; 
+             const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
              const snap = await getDoc(roomRef);
              if(snap.exists()) {
                  const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
                  localState.localAudioAnchor = null;
+                 localState.localHasPaused = false;
                  await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: Date.now(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
              }
         };
@@ -1183,7 +1220,7 @@
         
         document.getElementById('cutTimeSlider').addEventListener('change', async (e) => {
             const val = parseInt(e.target.value);
-            const appId = window.__app_id || 'wwts-game'; 
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { autoCutTime: val });
         });
