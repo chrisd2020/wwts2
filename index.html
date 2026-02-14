@@ -244,6 +244,19 @@
                 if(!doc.exists()) return;
                 const data = doc.data();
                 
+                // --- KICK LOGIC FOR PLAYERS ---
+                if (role === 'player') {
+                    const isStillInRoom = (data.players || []).some(p => p.id === user.uid);
+                    if (!isStillInRoom) {
+                        unsubscribeRoom();
+                        roomId = null;
+                        document.getElementById('player-screen').classList.add('hidden');
+                        document.getElementById('lobby-screen').classList.remove('hidden');
+                        showMainLobby();
+                        return;
+                    }
+                }
+
                 // --- UPDATE LOCAL STATE ---
                 localState.players = data.players || [];
                 localState.status = data.status;
@@ -373,6 +386,7 @@
 
                 return `
                 <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'winner-card' : ''}">
+                    <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center transition shadow z-20" title="Remove Player">×</button>
                     <div class="flex justify-between w-full text-xs text-gray-400 px-1">
                         <span>${p.name}</span>
                         ${isBuzzed ? `<span class="text-yellow-500 font-bold">#${i+1}</span>` : ''}
@@ -539,6 +553,20 @@
         window.awardWin = async (pid) => {
              alert("Winner selected!");
              window.hostResetRound();
+        };
+
+        window.removePlayer = async (pid) => {
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            
+            try {
+                const snap = await getDoc(roomRef);
+                if (snap.exists()) {
+                    const players = snap.data().players || [];
+                    const updated = players.filter(p => p.id !== pid);
+                    await updateDoc(roomRef, { players: updated });
+                }
+            } catch(e) { console.error("Remove player error", e); }
         };
 
         // --- SCRUBBING LOGIC (Synced) ---
@@ -932,7 +960,7 @@
         </div>
 
         <!-- Setup/Join -->
-        <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
+        <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-md space-y-5">
             <div class="space-y-3">
                 <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
                 <div class="flex gap-2">
@@ -954,7 +982,7 @@
         </div>
 
         <!-- Config Error -->
-        <div id="lobby-setup" class="hidden text-center glass p-8 rounded-2xl w-full max-w-md">
+        <div id="lobby-setup" class="hidden text-center glass p-8 rounded-2xl w-full max-md">
             <textarea id="firebaseConfigInput" rows="4" class="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono mb-4" placeholder='Paste Firebase Config JSON...'></textarea>
             <button onclick="saveFirebaseConfig()" class="w-full bg-white text-black font-bold py-2 rounded">Save Config</button>
         </div>
