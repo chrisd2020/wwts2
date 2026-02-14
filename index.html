@@ -236,8 +236,7 @@
         window.createRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
             const btn = document.getElementById('createRoomBtn');
-            btn.innerText = "Creating...";
-            btn.disabled = true;
+            if(btn) { btn.innerText = "Creating..."; btn.disabled = true; }
 
             const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
             roomId = newRoomId;
@@ -669,6 +668,8 @@
 
         window.hostStartRound = async () => {
             if (!roomId) return;
+            if (!deviceId || !token) return alert("Please link Spotify first.");
+
             const startBtn = document.getElementById('startRoundBtn');
             if (startBtn) startBtn.innerText = "Starting...";
             
@@ -685,7 +686,37 @@
                 localState.localAudioAnchor = null;
                 localState.localHasPaused = false;
 
-                // 1. Update DB immediately so players see "LISTEN..."
+                const tokenToUse = await getValidToken();
+
+                // 1. Force Spotify to start playback
+                if(playerInstance) {
+                    await playerInstance.activateElement();
+                    await playerInstance.setVolume(0.8);
+                    
+                    if (data.queuedPlaylist) {
+                        // Case A: Playing a new playlist
+                        await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
+                        });
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
+                        });
+                        await updateDoc(roomRef, { queuedPlaylist: null });
+                    } else if (localState.currentTrackUri) {
+                        // Case B: Re-playing the same track (ensure it actually wakes up by re-sending context)
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: 0 })
+                        });
+                    } else {
+                        // Case C: No known track, just try to resume
+                        await playerInstance.seek(0);
+                        await playerInstance.resume();
+                    }
+                }
+
+                // 2. Update DB status to 'playing'
                 await updateDoc(roomRef, {
                     status: 'playing',
                     hasCut: false,
@@ -696,29 +727,6 @@
                     lastWinnerId: null
                 });
 
-                // 2. Handle Spotify Playback in background
-                if(playerInstance) {
-                    await playerInstance.activateElement();
-                    await playerInstance.setVolume(0.8);
-                    
-                    const tokenToUse = await getValidToken();
-                    if (data.queuedPlaylist) {
-                        // Fresh playlist
-                        await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
-                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
-                        });
-                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
-                        });
-                        // Clear the queue info in DB after starting
-                        await updateDoc(roomRef, { queuedPlaylist: null });
-                    } else {
-                        // Resetting same song
-                        await playerInstance.seek(0);
-                        await playerInstance.resume();
-                    }
-                }
             } catch (e) {
                 console.error("Start Round Error:", e);
                 if (startBtn) startBtn.innerText = "Error - Retry";
