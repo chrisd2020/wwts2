@@ -96,11 +96,15 @@
             startTime: 0,
             pauseTime: 0,
             autoCutTime: 10,
-            latencyComp: 300, // Default 300ms compensation
             isDragging: false,
             timerInterval: null,
             currentTrackUri: null,
-            isTestMode: false
+            isTestMode: false,
+            
+            // Accurate Playback Tracking
+            spotifyPos: 0,
+            lastSpotifyUpdate: 0,
+            isSpotifyPlaying: false
         };
 
         function getFirebaseConfig() {
@@ -220,7 +224,6 @@
                     createdAt: serverTimestamp(),
                     players: [],
                     autoCutTime: 10,
-                    latencyComp: 300,
                     startTime: 0,
                     pauseTime: 0,
                     hasCut: false,
@@ -342,7 +345,6 @@
                 localState.startTime = data.startTime || 0;
                 localState.pauseTime = data.pauseTime || 0;
                 localState.autoCutTime = data.autoCutTime || 10;
-                localState.latencyComp = data.latencyComp || 300;
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
@@ -404,11 +406,6 @@
                 document.getElementById('cutTimeSlider').value = data.autoCutTime;
                 const cutPos = (data.autoCutTime / 60) * 100;
                 document.getElementById('cut-marker').style.left = `${cutPos}%`;
-            }
-
-            if(document.activeElement !== document.getElementById('latencySlider')) {
-                document.getElementById('latencyDisplay').innerText = data.latencyComp + 'ms';
-                document.getElementById('latencySlider').value = data.latencyComp;
             }
 
             // Update Sync Test Mode checkbox if not focused
@@ -546,6 +543,11 @@
                     localState.timerInterval = requestAnimationFrame(loop);
                     return; 
                 }
+                
+                let currentPosSeconds = 0;
+                
+                // For the Host, we use the raw clock for the timer during reveal/playing
+                // But for the Player, we now prioritize the Spotify internal clock
                 let elapsed = 0;
                 if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
@@ -554,25 +556,33 @@
                     elapsed = localState.pauseTime;
                 }
 
-                // Update Host Timer (Raw time)
+                // Accurate Interpolated Spotify Position (used for Player sync)
+                if (localState.isSpotifyPlaying) {
+                    currentPosSeconds = (localState.spotifyPos + (Date.now() - localState.lastSpotifyUpdate)) / 1000;
+                } else {
+                    currentPosSeconds = localState.spotifyPos / 1000;
+                }
+
+                // Update Host Timer (Raw time for general UI, but markers use recorded buzzedAt)
                 const hostTimer = document.getElementById('gameTimer');
                 if (hostTimer) hostTimer.innerText = elapsed.toFixed(2);
                 
                 const hostProgress = document.getElementById('timeline-progress');
                 if (hostProgress) hostProgress.style.width = Math.min((elapsed/60)*100, 100) + '%';
 
-                // Update Player Timer (Freeze if already buzzed, and apply latency compensation visual)
+                // Update Player Timer
                 const playerTimer = document.getElementById('player-game-timer');
                 const playerProgress = document.getElementById('player-timeline-progress');
                 if (playerTimer || playerProgress) {
-                    let pElapsed = elapsed;
+                    let pElapsed = 0;
                     const me = localState.players.find(p => p.id === user.uid);
                     
                     if (me && me.buzzedAt !== null) {
                         pElapsed = me.buzzedAt;
                     } else {
-                        // Subtract compensation for visual alignment on client
-                        pElapsed = Math.max(0, elapsed - (localState.latencyComp / 1000));
+                        // In "listen" phase, timer stays at 0 until Spotify starts
+                        // In "playing" phase, timer is exactly the song position
+                        pElapsed = Math.max(0, currentPosSeconds);
                     }
                     
                     if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
@@ -661,13 +671,6 @@
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { isTestMode: e.checked });
-        };
-
-        window.updateLatency = async (val) => {
-            document.getElementById('latencyDisplay').innerText = val + 'ms';
-            const appId = window.__app_id || 'wwts-game'; 
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            await updateDoc(roomRef, { latencyComp: parseInt(val) });
         };
 
         window.hostEndRound = async () => {
@@ -908,9 +911,16 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // Apply Latency Compensation on recording
-            const rawElapsed = (Date.now() - localState.startTime) / 1000;
-            const elapsed = Math.max(0, rawElapsed - (localState.latencyComp / 1000));
+            // USE ACCURATE INTERNAL SPOTIFY POSITION
+            let buzzedAtSeconds = 0;
+            if (localState.isSpotifyPlaying) {
+                buzzedAtSeconds = (localState.spotifyPos + (Date.now() - localState.lastSpotifyUpdate)) / 1000;
+            } else {
+                buzzedAtSeconds = localState.spotifyPos / 1000;
+            }
+            
+            // Correct for small network/processing overhead between hit and send
+            const elapsed = Math.max(0, buzzedAtSeconds);
             
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
@@ -1041,6 +1051,11 @@
                 if (!state) return;
                 const track = state.track_window.current_track;
                 
+                // --- ACCURATE POSITION TRACKING ---
+                localState.spotifyPos = state.position;
+                localState.lastSpotifyUpdate = Date.now();
+                localState.isSpotifyPlaying = !state.paused;
+
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
                     const appId = window.__app_id || 'wwts-game'; 
                     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
@@ -1222,7 +1237,7 @@
             
             <div class="mb-8 flex flex-col items-center z-10">
                 <div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div>
-                <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Compensated Sync Time</div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Spotify Playback Sync</div>
             </div>
 
             <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">
@@ -1257,11 +1272,8 @@
                     <div class="flex justify-between items-center"><label class="text-xs font-bold uppercase text-yellow-500">Sync Test Mode</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div>
                 </div>
                 
-                <!-- Latency Compensation -->
                 <div class="space-y-1 pt-2 border-t border-white/5">
-                    <div class="flex justify-between text-[10px] text-gray-400 font-bold uppercase tracking-wider"><span>Latency Comp:</span><span id="latencyDisplay" class="text-yellow-500">300ms</span></div>
-                    <input type="range" id="latencySlider" min="0" max="1000" step="50" value="300" onchange="updateLatency(this.value)" class="w-full accent-yellow-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
-                    <p class="text-[9px] text-gray-500 leading-tight">Increase if buzzes happen too late during reveal.</p>
+                    <p class="text-[10px] text-gray-500 leading-tight">Players compete on their internal Spotify position. Timer starts when music starts.</p>
                 </div>
 
                 <div class="space-y-1">
@@ -1290,7 +1302,7 @@
                     </div>
                     <div class="text-right">
                         <div id="gameTimer" class="text-5xl font-mono font-bold text-white tabular-nums">0.00</div>
-                        <div class="text-xs text-gray-500 uppercase mt-1">Raw Host Time</div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">Global Game Time</div>
                     </div>
                 </div>
                 <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
