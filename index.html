@@ -975,12 +975,32 @@
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              gameLog("⏭ Next Song");
-             if(playerInstance) { await playerInstance.activateElement(); await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
+             if(playerInstance) { 
+                 await playerInstance.activateElement(); 
+                 await playerInstance.setVolume(0.8); 
+                 await playerInstance.nextTrack(); 
+             }
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const slider = document.getElementById('cutTimeSlider'); const cutTime = slider ? parseInt(slider.value) : 10;
-             const snap = await getDoc(roomRef); const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
-             localState.localAudioAnchor = null; localState.localHasPaused = false;
-             await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: serverTimestamp(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
+             const slider = document.getElementById('cutTimeSlider'); 
+             const cutTime = slider ? parseInt(slider.value) : 10;
+             const snap = await getDoc(roomRef); 
+             const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+             
+             localState.localAudioAnchor = null; 
+             localState.localHasPaused = false;
+             
+             // Reset URI in DB so clients don't re-play the previous song while skipping
+             await updateDoc(roomRef, { 
+                 status: 'playing', 
+                 hasCut: false, 
+                 startTime: serverTimestamp(), 
+                 pauseTime: 0, 
+                 autoCutTime: cutTime, 
+                 players: cleanPlayers, 
+                 queuedPlaylist: null, 
+                 lastWinnerId: null,
+                 currentTrackUri: null 
+             });
         };
         
         document.getElementById('search-btn').onclick = async () => {
