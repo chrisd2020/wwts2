@@ -56,6 +56,23 @@
         #timeline-container { cursor: default; }
         #timeline-container.interactive { cursor: ew-resize; pointer-events: auto; }
         #timeline-container.interactive:hover { height: 2.5rem; background-color: rgba(0,0,0,0.5); }
+
+        /* Win Animation */
+        @keyframes float-up {
+            0% { transform: translateY(20px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
+        }
+        .animate-float {
+            animation: float-up 0.5s ease-out forwards;
+        }
+        .confetti {
+            position: absolute; width: 10px; height: 10px; background: #ffd700;
+            animation: confetti-fall 3s linear infinite;
+        }
+        @keyframes confetti-fall {
+            0% { transform: translateY(-10vh) rotate(0deg); }
+            100% { transform: translateY(110vh) rotate(720deg); }
+        }
     </style>
 
     <!-- Firebase SDKs -->
@@ -123,12 +140,29 @@
                             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
                             const snap = await getDoc(roomRef);
                             
-                            if (snap.exists() && snap.data().hostId === user.uid) {
-                                roomId = savedRoomId;
-                                document.getElementById('lobby-screen').classList.add('hidden');
-                                document.getElementById('host-screen').classList.remove('hidden');
-                                document.getElementById('roomCodeDisplay').innerText = roomId;
-                                subscribeToRoom(roomId, 'host');
+                            if (snap.exists()) {
+                                const data = snap.data();
+                                if (data.hostId === user.uid) {
+                                    roomId = savedRoomId;
+                                    document.getElementById('lobby-screen').classList.add('hidden');
+                                    document.getElementById('host-screen').classList.remove('hidden');
+                                    document.getElementById('roomCodeDisplay').innerText = roomId;
+                                    subscribeToRoom(roomId, 'host');
+                                } else {
+                                    // Check if user is an existing player in this room
+                                    const me = (data.players || []).find(p => p.id === user.uid);
+                                    if (me) {
+                                        roomId = savedRoomId;
+                                        document.getElementById('lobby-screen').classList.add('hidden');
+                                        document.getElementById('player-screen').classList.remove('hidden');
+                                        document.getElementById('player-room-code').innerText = roomId;
+                                        document.getElementById('player-name-display').innerText = me.name;
+                                        subscribeToRoom(roomId, 'player');
+                                    } else {
+                                        localStorage.removeItem('wwts_active_room_id');
+                                        showMainLobby();
+                                    }
+                                }
                             } else {
                                 localStorage.removeItem('wwts_active_room_id');
                                 showMainLobby();
@@ -141,8 +175,7 @@
             } catch(e) { 
                 console.error("Firebase Init Error", e); 
                 document.getElementById('lobby-loading').classList.add('hidden');
-                document.getElementById('error-screen').classList.remove('hidden');
-                document.getElementById('error-message').innerText = e.message;
+                document.getElementById('lobby-setup').classList.remove('hidden');
             }
         }
 
@@ -188,7 +221,8 @@
                     startTime: 0,
                     pauseTime: 0,
                     hasCut: false,
-                    queuedPlaylist: null
+                    queuedPlaylist: null,
+                    lastWinnerId: null
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -224,17 +258,38 @@
                     return;
                 }
 
-                const playerData = { id: user.uid, name: name, buzzedAt: null, score: 0 };
-                await updateDoc(roomRef, { players: arrayUnion(playerData) });
+                const data = snap.data();
+                const players = data.players || [];
+                
+                // --- REJOIN LOGIC ---
+                // If a player with this name already exists, pick up that session.
+                const existingPlayer = players.find(p => p.name.toLowerCase() === name.toLowerCase());
+
+                if (existingPlayer) {
+                    // Update the existing player object with current UID (in case user cleared cache/is on new device)
+                    const updatedPlayers = players.map(p => 
+                        p.name.toLowerCase() === name.toLowerCase() ? { ...p, id: user.uid } : p
+                    );
+                    await updateDoc(roomRef, { players: updatedPlayers });
+                } else {
+                    // Normal Join
+                    const playerData = { id: user.uid, name: name, buzzedAt: null, score: 0 };
+                    await updateDoc(roomRef, { players: arrayUnion(playerData) });
+                }
 
                 roomId = code;
+                localStorage.setItem('wwts_active_room_id', roomId);
                 document.getElementById('lobby-screen').classList.add('hidden');
                 document.getElementById('player-screen').classList.remove('hidden');
                 document.getElementById('player-room-code').innerText = code;
                 document.getElementById('player-name-display').innerText = name;
 
                 subscribeToRoom(code, 'player');
-            } catch(e) { console.error("Join Error:", e); }
+            } catch(e) { 
+                console.error("Join Error:", e); 
+                btn.innerText = "Join Game";
+                btn.disabled = false;
+            }
         };
 
         function subscribeToRoom(id, role) {
@@ -243,18 +298,18 @@
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${id}`);
 
             unsubscribeRoom = onSnapshot(roomRef, (doc) => {
-                if(!doc.exists()) return;
+                if(!doc.exists()) {
+                    // Room deleted by host
+                    handleLogout();
+                    return;
+                }
                 const data = doc.data();
                 
-                // --- KICK LOGIC FOR PLAYERS ---
+                // --- KICK/REMOVAL LOGIC FOR PLAYERS ---
                 if (role === 'player') {
                     const isStillInRoom = (data.players || []).some(p => p.id === user.uid);
                     if (!isStillInRoom) {
-                        unsubscribeRoom();
-                        roomId = null;
-                        document.getElementById('player-screen').classList.add('hidden');
-                        document.getElementById('lobby-screen').classList.remove('hidden');
-                        showMainLobby();
+                        handleLogout();
                         return;
                     }
                 }
@@ -262,7 +317,6 @@
                 // --- HOST REFRESH SYNC ---
                 if (role === 'host' && isHostFirstLoad) {
                     isHostFirstLoad = false;
-                    // Reset room status to lobby on refresh to stop playback/rounds
                     window.hostResetRound(); 
                 }
 
@@ -276,7 +330,20 @@
 
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
+            }, (error) => {
+                console.error("Snapshot error:", error);
             });
+        }
+
+        function handleLogout() {
+            if (unsubscribeRoom) unsubscribeRoom();
+            unsubscribeRoom = null;
+            roomId = null;
+            localStorage.removeItem('wwts_active_room_id');
+            document.getElementById('player-screen').classList.add('hidden');
+            document.getElementById('host-screen').classList.add('hidden');
+            document.getElementById('lobby-screen').classList.remove('hidden');
+            showMainLobby();
         }
 
         // --- HOST LOGIC ---
@@ -284,7 +351,6 @@
         function updateHostUI(data) {
             renderHostPlayers(data);
             
-            // Slider Control (Only if not dragging)
             if(document.activeElement !== document.getElementById('cutTimeSlider')) {
                 document.getElementById('cutTimeDisplay').innerText = data.autoCutTime + 's';
                 document.getElementById('cutTimeSlider').value = data.autoCutTime;
@@ -296,21 +362,29 @@
             const startBtn = document.getElementById('startRoundBtn');
             const revealBtn = document.getElementById('revealBtn');
             const timelineContainer = document.getElementById('timeline-container');
+            const hostScoreboard = document.getElementById('host-scoreboard');
 
-            // Handle persistence of queued playlist view on refresh
+            if (hostScoreboard) {
+                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
+                hostScoreboard.innerHTML = sorted.map((p, idx) => `
+                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
+                        <span class="text-xs truncate mr-2 text-gray-300">
+                            ${idx === 0 ? '👑 ' : ''}${p.name}
+                        </span>
+                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-[10px]">${p.score || 0}</span>
+                    </div>
+                `).join('');
+            }
+
             if (data.status === 'lobby' && data.queuedPlaylist) {
                 document.getElementById('track-name').innerText = data.queuedPlaylist.name;
                 document.getElementById('artist-name').innerText = "Ready to Start";
                 document.getElementById('album-art').innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
             }
-
-            // --- STATUS HANDLING ---
             
             if (data.status === 'playing') {
                 if (!localState.timerInterval) startLoop();
                 timelineContainer.classList.remove('interactive');
-                
-                // Reset Reveal Button to default state (Disabled)
                 revealBtn.disabled = true; 
                 revealBtn.innerText = "🔊 Reveal Music";
                 revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
@@ -326,57 +400,41 @@
                     startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                     startBtn.onclick = () => window.hostTriggerCut();
                 }
-
             } else if (data.status === 'complete') {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
-
                 roundStatus.innerText = "Guesses In";
                 startBtn.innerText = "Reset Round";
                 startBtn.classList.replace('bg-red-600', 'bg-gray-700');
                 startBtn.onclick = () => window.hostResetRound();
-
                 revealBtn.disabled = false;
                 revealBtn.innerText = "🔊 Reveal Music";
                 revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                
                 timelineContainer.classList.add('interactive');
-
             } else if (data.status === 'revealing') {
                 if(!localState.timerInterval) startLoop();
-                
                 roundStatus.innerText = "Revealing";
                 revealBtn.innerText = "⏸ Pause Reveal";
                 revealBtn.className = "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                
                 timelineContainer.classList.add('interactive');
-
             } else if (data.status === 'paused_reveal') {
                 if(!localState.timerInterval) startLoop();
-
                 roundStatus.innerText = "Paused";
                 revealBtn.innerText = "▶ Resume Reveal";
                 revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow active:translate-y-1";
                 revealBtn.onclick = () => window.hostToggleReveal();
-                
                 timelineContainer.classList.add('interactive');
-
             } else {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
-                
                 roundStatus.innerText = "Idle";
                 startBtn.innerText = "▶ Start Round";
                 startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
                 startBtn.onclick = () => window.hostStartRound();
-                
-                // Reset Reveal Button to default state (Disabled)
                 revealBtn.disabled = true;
                 revealBtn.innerText = "🔊 Reveal Music";
                 revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
-                
                 timelineContainer.classList.remove('interactive');
-                
                 document.getElementById('gameTimer').innerText = "0.00";
                 document.getElementById('timeline-progress').style.width = "0%";
             }
@@ -395,7 +453,6 @@
 
             grid.innerHTML = players.map((p, i) => {
                 const isBuzzed = p.buzzedAt !== null;
-                
                 if (isBuzzed && data.status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
@@ -405,9 +462,7 @@
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name}</div>`;
                     markersContainer.appendChild(marker);
                 }
-
                 const canAward = isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
-
                 return `
                 <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'winner-card' : ''}">
                     <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center transition shadow z-20" title="Remove Player">×</button>
@@ -429,34 +484,26 @@
         // --- THE GAME LOOP ---
         function startLoop() {
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
-            
             function loop() {
                 if (localState.isDragging) {
                     localState.timerInterval = requestAnimationFrame(loop);
                     return; 
                 }
-
                 let elapsed = 0;
-                
                 if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
                     elapsed = Math.max(0, elapsed);
                 } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     elapsed = localState.pauseTime;
                 }
-
                 document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
                 document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
-                
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(elapsed);
                 }
-
-                // Auto Cut Logic
                 if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && elapsed >= localState.autoCutTime) {
                     window.hostTriggerCut();
                 }
-
                 localState.timerInterval = requestAnimationFrame(loop);
             }
             localState.timerInterval = requestAnimationFrame(loop);
@@ -468,13 +515,7 @@
              if(!deviceId) return alert("Player not ready.");
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             
-             // Persist the selection to Firestore so refresh doesn't lose it
-             await updateDoc(roomRef, { 
-                queuedPlaylist: { uri, name, img } 
-             });
-             
-             // Instant Visual Feedback
+             await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
              document.getElementById('track-name').innerText = name;
              document.getElementById('artist-name').innerText = "Ready to Start";
              document.getElementById('album-art').innerHTML = `<img src="${img}" class="w-full h-full object-cover">`;
@@ -484,7 +525,6 @@
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
-            
             const snap = await getDoc(roomRef);
             const data = snap.data();
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
@@ -496,20 +536,18 @@
                 pauseTime: 0,
                 autoCutTime: cutTime,
                 players: cleanPlayers,
-                queuedPlaylist: null // Clear the queue since we are starting
+                queuedPlaylist: null,
+                lastWinnerId: null
             });
 
             if(player) {
                 await player.setVolume(0.8);
-                
                 if (data.queuedPlaylist) {
-                    // Start the queued playlist
                     await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                         method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                     });
                 } else {
-                    // Just resume/restart current
                     await player.seek(0);
                     await player.resume();
                 }
@@ -520,7 +558,6 @@
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             await updateDoc(roomRef, { hasCut: true });
-            
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.05);
@@ -542,27 +579,18 @@
         window.hostToggleReveal = async () => {
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
             if (localState.status === 'revealing') {
-                // Pause
                 const elapsed = (Date.now() - localState.startTime) / 1000;
                 await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: elapsed });
                 if(player) player.pause();
             } else {
-                // Resume or Start Fresh
                 let startOffset = 0;
-                
                 if (localState.status === 'paused_reveal') {
                     startOffset = localState.pauseTime * 1000;
                 } else {
                     startOffset = 0;
                 }
-
-                await updateDoc(roomRef, { 
-                    status: 'revealing', 
-                    startTime: Date.now() - startOffset 
-                });
-                
+                await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - startOffset });
                 if(player) {
                     await player.setVolume(0.8);
                     await player.seek(startOffset);
@@ -574,46 +602,40 @@
         window.hostResetRound = async () => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             
-             // Explicitly clear buzzers and elapsed time on reset
              const snap = await getDoc(roomRef);
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
-
-             await updateDoc(roomRef, { 
-                status: 'lobby', 
-                hasCut: false,
-                players: cleanPlayers,
-                pauseTime: 0
-             });
+             await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
              if(player) player.pause();
         };
 
         window.awardWin = async (pid) => {
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             
              try {
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
                     if (!snap.exists()) return;
                     const players = snap.data().players || [];
                     const updated = players.map(p => {
-                        if (p.id === pid) {
-                            return { ...p, score: (p.score || 0) + 1 };
-                        }
+                        if (p.id === pid) return { ...p, score: (p.score || 0) + 1 };
                         return p;
                     });
-                    t.update(roomRef, { players: updated });
+                    t.update(roomRef, { 
+                        players: updated,
+                        lastWinnerId: pid,
+                        status: 'lobby',
+                        hasCut: false,
+                        pauseTime: 0
+                    });
                 });
-                window.hostResetRound();
+                if(player) player.pause();
              } catch(e) { console.error("Award win error", e); }
         };
 
         window.removePlayer = async (pid) => {
             const appId = window.__app_id || 'wwts-game'; 
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
             try {
                 const snap = await getDoc(roomRef);
                 if (snap.exists()) {
@@ -624,9 +646,23 @@
             } catch(e) { console.error("Remove player error", e); }
         };
 
-        // --- SCRUBBING LOGIC (Synced) ---
+        window.playerLeave = async () => {
+            if (!user || !roomId) return;
+            const appId = window.__app_id || 'wwts-game'; 
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            try {
+                const snap = await getDoc(roomRef);
+                if (snap.exists()) {
+                    const players = snap.data().players || [];
+                    const updated = players.filter(p => p.id !== user.uid);
+                    await updateDoc(roomRef, { players: updated });
+                }
+            } catch(e) { console.error("Leave error:", e); }
+            handleLogout();
+        };
+
+        // --- SCRUBBING LOGIC ---
         const timeline = document.getElementById('timeline-container');
-        
         function getScrubTime(e) {
             const rect = timeline.getBoundingClientRect();
             let x = e.clientX - rect.left;
@@ -634,81 +670,59 @@
             const pct = x / rect.width;
             return pct * 60; 
         }
-
         timeline.addEventListener('mousedown', (e) => {
             if (!timeline.classList.contains('interactive')) return;
             localState.isDragging = true;
             handleScrub(e);
         });
-
         window.addEventListener('mousemove', (e) => {
             if (localState.isDragging) handleScrub(e);
         });
-
         window.addEventListener('mouseup', async (e) => {
             if (localState.isDragging) {
                 localState.isDragging = false;
                 const seconds = getScrubTime(e);
-                
                 const appId = window.__app_id || 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                      await updateDoc(roomRef, { pauseTime: seconds });
                 } else if (localState.status === 'revealing') {
                      await updateDoc(roomRef, { startTime: Date.now() - (seconds * 1000) });
                 }
-                
                 if(player) await player.seek(seconds * 1000);
             }
         });
-
         function handleScrub(e) {
             const seconds = getScrubTime(e);
             document.getElementById('gameTimer').innerText = seconds.toFixed(2);
             document.getElementById('timeline-progress').style.width = ((seconds/60)*100) + '%';
             highlightClosest(seconds);
         }
-
         function highlightClosest(elapsed) {
             const players = localState.players;
             let closestId = null;
             let minDiff = Infinity;
-
             players.forEach(p => {
                 if (p.buzzedAt !== null) {
                     const diff = Math.abs(elapsed - p.buzzedAt);
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        closestId = p.id;
-                    }
+                    if (diff < minDiff) { minDiff = diff; closestId = p.id; }
                 }
             });
-
             players.forEach(p => {
                 const card = document.getElementById(`player-card-${p.id}`);
                 const marker = document.getElementById(`marker-${p.id}`);
                 const awardBtn = document.getElementById(`award-btn-${p.id}`);
-                
                 if (p.id === closestId) { 
-                    if(card) {
-                        card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                        card.classList.remove('winner-card');
-                    }
+                    if(card) { card.classList.add('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10'); card.classList.remove('winner-card'); }
                     if(marker) marker.classList.add('marker-closest');
-                    // Only show "Award Win" for the currently highlighted (closest) player
                     if(awardBtn) awardBtn.classList.remove('hidden');
                 } else {
-                    if(card) {
-                        card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10');
-                        if(p.buzzedAt !== null) card.classList.add('winner-card');
-                    }
+                    if(card) { card.classList.remove('ring-4', 'ring-yellow-400', 'scale-105', 'bg-yellow-900/30', 'z-10'); if(p.buzzedAt !== null) card.classList.add('winner-card'); }
                     if(marker) marker.classList.remove('marker-closest');
                     if(awardBtn) awardBtn.classList.add('hidden');
                 }
             });
         }
-
 
         // --- PLAYER UI ---
         function updatePlayerUI(data) {
@@ -716,8 +730,8 @@
             const buzzBtn = document.getElementById('player-buzz-btn');
             const buzzContainer = document.getElementById('buzz-container');
             const scoreboard = document.getElementById('player-scoreboard');
+            const winOverlay = document.getElementById('win-overlay');
 
-            // --- SCOREBOARD ---
             if (scoreboard) {
                 const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
                 scoreboard.innerHTML = sorted.map(p => `
@@ -730,13 +744,18 @@
                 `).join('');
             }
 
+            if (data.lastWinnerId === user.uid) {
+                winOverlay.classList.remove('hidden');
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
+            } else {
+                winOverlay.classList.add('hidden');
+            }
+
             if (data.status === 'playing') {
                 if (data.hasCut) {
-                    // SING MODE
                     statusEl.innerText = "SING!";
                     statusEl.className = "text-4xl font-black text-red-500";
                     buzzContainer.classList.remove('buzz-anim');
-                    
                     const myData = data.players.find(p => p.id === user.uid);
                     if (myData && myData.buzzedAt) {
                         buzzBtn.innerText = "BUZZED!";
@@ -749,7 +768,6 @@
                         if(navigator.vibrate) navigator.vibrate(200);
                     }
                 } else {
-                    // LISTEN MODE
                     statusEl.innerText = "LISTEN...";
                     statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
                     buzzBtn.disabled = true;
@@ -758,7 +776,6 @@
                     buzzContainer.classList.remove('buzz-anim');
                 }
             } else if (data.status === 'complete') {
-                // ROUND OVER MODE
                 statusEl.innerText = "Round Over";
                 statusEl.className = "text-xl text-yellow-400 font-bold";
                 buzzBtn.disabled = true;
@@ -777,48 +794,31 @@
             if(!roomId || !user) return;
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
-            
             const elapsed = (Date.now() - localState.startTime) / 1000;
             const roomRef = doc(db, 'artifacts', (window.__app_id || 'wwts-game'), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
             try {
                 await runTransaction(db, async (t) => {
                     const docSnap = await t.get(roomRef);
                     if (!docSnap.exists()) return;
                     const data = docSnap.data();
-                    
                     if (!data.hasCut) return; 
-
                     const players = data.players;
                     const myIndex = players.findIndex(p => p.id === user.uid);
-                    
                     if (myIndex !== -1 && players[myIndex].buzzedAt === null) {
                         players[myIndex].buzzedAt = elapsed; 
-                        
-                        // Check if all buzzed
                         const allBuzzed = players.every(p => p.buzzedAt !== null);
-                        
-                        if (allBuzzed) {
-                            t.update(roomRef, { 
-                                players: players,
-                                status: 'complete',
-                                pauseTime: elapsed
-                            });
-                        } else {
-                            t.update(roomRef, { players: players });
-                        }
+                        if (allBuzzed) { t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); } else { t.update(roomRef, { players }); }
                     }
                 });
             } catch(e) { console.error("Buzz failed", e); btn.innerText = "RETRY"; }
         };
 
-        // --- SPOTIFY LOGIC (PKCE) ---
+        // --- SPOTIFY ---
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
         let token = localStorage.getItem('wwts_host_token');
         let player = null;
 
-        // PKCE Helpers
         function generateRandomString(length) {
             let text = '';
             const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -836,12 +836,9 @@
              const params = new URLSearchParams(window.location.search);
              const code = params.get('code');
              if (code) { await exchangeToken(code); } 
-             
              if(token) updateAuthUI();
-             
              const storedId = localStorage.getItem(CLIENT_ID_KEY);
              if(storedId) document.getElementById('clientIdInput').value = storedId;
-             
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
              const rUriDisplay = document.getElementById('redirectUriDisplay');
              if(rUriDisplay) rUriDisplay.innerText = redirect;
@@ -853,26 +850,20 @@
                  status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
                  status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
              }
-             document.getElementById('auth-panel')?.classList.add('hidden'); // Hide login prompt if connected
+             document.getElementById('auth-panel')?.classList.add('hidden');
         }
 
         window.startLogin = async () => {
             const clientId = document.getElementById('clientIdInput').value.trim();
             if(!clientId) return alert("Enter Client ID");
             localStorage.setItem(CLIENT_ID_KEY, clientId);
-            
             const verifier = generateRandomString(128);
             const challenge = await generateCodeChallenge(verifier);
             localStorage.setItem("wwts_verifier", verifier);
-            
             const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
             localStorage.setItem("wwts_redirect_uri", redirectUri);
-
             const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
-            const args = new URLSearchParams({
-                response_type: 'code', client_id: clientId, scope: scopes, redirect_uri: redirectUri,
-                code_challenge_method: 'S256', code_challenge: challenge
-            });
+            const args = new URLSearchParams({ response_type: 'code', client_id: clientId, scope: scopes, redirect_uri: redirectUri, code_challenge_method: 'S256', code_challenge: challenge });
             window.location.href = 'https://accounts.spotify.com/authorize?' + args;
         };
 
@@ -880,60 +871,27 @@
             const verifier = localStorage.getItem("wwts_verifier");
             const clientId = localStorage.getItem(CLIENT_ID_KEY);
             let redirectUri = localStorage.getItem("wwts_redirect_uri") || (window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/'));
-
-            const params = new URLSearchParams({
-                client_id: clientId, grant_type: 'authorization_code', code: code,
-                redirect_uri: redirectUri, code_verifier: verifier,
-            });
-
+            const params = new URLSearchParams({ client_id: clientId, grant_type: 'authorization_code', code: code, redirect_uri: redirectUri, code_verifier: verifier });
             try {
-                const res = await fetch('https://accounts.spotify.com/api/token', {
-                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
-                });
+                const res = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
                 const data = await res.json();
-                if (data.access_token) {
-                    localStorage.setItem('wwts_host_token', data.access_token);
-                    token = data.access_token;
-                    window.location.href = redirectUri;
-                } else {
-                    alert("Token Error: " + data.error);
-                }
+                if (data.access_token) { localStorage.setItem('wwts_host_token', data.access_token); token = data.access_token; window.location.href = redirectUri; }
             } catch(e) { console.error(e); }
         }
 
-        window.logout = () => {
-            localStorage.removeItem('wwts_host_token');
-            window.location.reload();
-        };
+        window.logout = () => { localStorage.removeItem('wwts_host_token'); window.location.reload(); };
 
-        // Spotify Player Init
         let playerInit = false;
-        window.onSpotifyWebPlaybackSDKReady = () => {
-             if(token && !playerInit) initSpotifyPlayer();
-        };
+        window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
 
         function initSpotifyPlayer() {
             if(playerInit) return;
             playerInit = true;
-            
-            player = new Spotify.Player({
-                name: "WWTS Host",
-                getOAuthToken: cb => { cb(token); },
-                volume: 0.8
-            });
-
-            player.addListener('ready', ({ device_id }) => {
-                deviceId = device_id;
-                console.log('Ready with Device ID', device_id);
-                updateAuthUI();
-                // Ensure player is paused on first load
-                player.pause();
-            });
-
+            player = new Spotify.Player({ name: "WWTS Host", getOAuthToken: cb => { cb(token); }, volume: 0.8 });
+            player.addListener('ready', ({ device_id }) => { deviceId = device_id; updateAuthUI(); player.pause(); });
             player.addListener('player_state_changed', state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                // Only update metadata if not in a queued "Ready to Start" state
                 if (localState.status !== 'lobby') {
                     document.getElementById('track-name').innerText = track.name;
                     document.getElementById('artist-name').innerText = track.artists[0].name;
@@ -943,52 +901,25 @@
             player.connect();
         }
 
-        // Host Actions
         document.getElementById('nextRoundBtn').onclick = async () => {
-             if(player) {
-                 await player.setVolume(0.8);
-                 await player.nextTrack();
-             }
-             
-             // Start Game Logic Immediately
+             if(player) { await player.setVolume(0.8); await player.nextTrack(); }
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
-             
              const snap = await getDoc(roomRef);
              if(snap.exists()) {
                  const cleanPlayers = snap.data().players.map(p => ({...p, buzzedAt: null}));
-
-                 await updateDoc(roomRef, {
-                    status: 'playing',
-                    hasCut: false,
-                    startTime: Date.now(),
-                    pauseTime: 0,
-                    autoCutTime: cutTime,
-                    players: cleanPlayers,
-                    queuedPlaylist: null
-                 });
+                 await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: Date.now(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, queuedPlaylist: null, lastWinnerId: null });
              }
         };
         
-        // Search
         document.getElementById('search-btn').onclick = async () => {
             const query = document.getElementById('search-input').value;
             if(!token) return alert("Log in first");
-            
-            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${token}` } });
             const data = await res.json();
-            
-            if (!data.playlists || !data.playlists.items) {
-                 document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>';
-                 return;
-            }
-
-            document.getElementById('results').innerHTML = data.playlists.items
-                .filter(p => p !== null)
-                .map(p => {
+            if (!data.playlists || !data.playlists.items) { document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>'; return; }
+            document.getElementById('results').innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
                     const imgUrl = p.images && p.images.length > 0 ? p.images[0].url : 'https://via.placeholder.com/40';
                     const safeName = p.name.replace(/'/g, "\\'"); 
                     return `
@@ -1002,7 +933,6 @@
                 `}).join('');
         };
 
-        // Settings Toggles
         document.getElementById('cutTimeSlider').addEventListener('input', (e) => {
              const val = e.target.value;
              document.getElementById('cutTimeDisplay').innerText = val + 's';
@@ -1070,13 +1000,28 @@
                 <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
                 <div id="player-name-display" class="font-bold text-white text-lg leading-none">---</div>
             </div>
-            <div class="text-right">
-                <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
-                <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
+                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+                </div>
+                <button onclick="playerLeave()" class="bg-red-600/20 hover:bg-red-600/40 text-red-500 text-[10px] font-bold px-3 py-1.5 rounded-full border border-red-500/30 transition uppercase tracking-wider">Leave</button>
             </div>
         </header>
 
         <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
+            <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
+                <div class="text-8xl mb-4">🏆</div>
+                <h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter">YOU WON!</h2>
+                <p class="text-xl text-white font-bold">The host awarded you a point!</p>
+                <div class="mt-8 text-sm text-gray-400 animate-pulse">Waiting for next song...</div>
+                <div class="confetti" style="left: 10%; animation-delay: 0s;"></div>
+                <div class="confetti" style="left: 30%; animation-delay: 1s;"></div>
+                <div class="confetti" style="left: 50%; animation-delay: 0.5s;"></div>
+                <div class="confetti" style="left: 70%; animation-delay: 1.5s;"></div>
+                <div class="confetti" style="left: 90%; animation-delay: 0.2s;"></div>
+            </div>
+
             <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
                 <div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div>
             </div>
@@ -1086,79 +1031,50 @@
             </button>
         </main>
 
-        <!-- PLAYER SCOREBOARD -->
         <section class="bg-black/40 backdrop-blur-lg p-4 border-t border-white/10 max-h-48 flex flex-col">
             <h3 class="text-[10px] uppercase font-black tracking-widest text-gray-500 mb-2">Live Scoreboard</h3>
-            <div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1">
-                <!-- Scores injected here -->
-            </div>
+            <div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div>
         </section>
     </div>
 
     <!-- HOST SCREEN (Main Game) -->
     <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[350px_1fr] gap-6 max-w-7xl mx-auto w-full h-full">
-        
-        <!-- LEFT COLUMN: CONTROLS -->
         <div class="flex flex-col gap-4 h-full overflow-hidden">
-            <!-- Header -->
             <div class="glass p-4 rounded-xl">
                 <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
                 <div class="flex justify-between items-end mt-2">
-                    <div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400">
-                        <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline
-                    </div>
-                    <div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">
-                        Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span>
-                    </div>
+                    <div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400"><span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline</div>
+                    <div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span></div>
                 </div>
             </div>
-
-            <!-- Settings -->
             <div class="glass p-4 rounded-xl space-y-4">
                 <div id="auth-panel">
-                     <button onclick="startLogin()" class="w-full bg-spotify text-black font-bold text-xs py-2 rounded">Spotify Login</button>
+                     <button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded">Spotify Login</button>
                      <input id="clientIdInput" class="w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
                      <div id="redirectUriDisplay" class="hidden"></div>
                 </div>
-                
-                <div class="flex justify-between items-center border-t border-white/10 pt-4">
-                    <label class="text-xs font-bold uppercase text-gray-400">Auto-Cut</label>
-                    <input type="checkbox" id="autoCutToggle" checked class="accent-green-500">
-                </div>
+                <div class="flex justify-between items-center border-t border-white/10 pt-4"><label class="text-xs font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div>
                 <div class="space-y-1">
-                    <div class="flex justify-between text-xs text-gray-300">
-                        <span>Cut after:</span>
-                        <span id="cutTimeDisplay" class="font-mono text-green-400">10s</span>
-                    </div>
+                    <div class="flex justify-between text-xs text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div>
                     <input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 </div>
-                <div><button onclick="logout()" class="text-[10px] text-red-400 underline">Logout</button></div>
             </div>
-
-            <!-- Search -->
+            <div class="glass p-4 rounded-xl flex flex-col h-40">
+                <h3 class="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-2">Live Standings</h3>
+                <div id="host-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div>
+            </div>
             <div class="glass p-4 rounded-xl flex-1 flex flex-col min-h-0">
-                <div class="flex gap-2 mb-2">
-                    <input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500">
-                    <button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button>
-                </div>
-                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll">
-                    <div class="text-gray-500 text-xs text-center mt-4">Results appear here...</div>
-                </div>
+                <div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Search Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-3 rounded text-sm">🔍</button></div>
+                <div id="results" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scroll"><div class="text-gray-500 text-xs text-center mt-4">Results appear here...</div></div>
+                <div class="pt-2 border-t border-white/5 mt-2"><button onclick="logout()" class="text-[10px] text-red-400 underline">Logout & Reset</button></div>
             </div>
         </div>
-
-        <!-- RIGHT COLUMN: GAME BOARD -->
         <div class="flex flex-col gap-4 h-full overflow-hidden relative">
-            
-            <!-- NOW PLAYING & TIMELINE -->
             <div class="glass p-6 rounded-xl border-t-4 border-yellow-500 relative overflow-hidden">
                 <div class="flex gap-6 items-center relative z-10">
                     <div id="album-art" class="w-24 h-24 bg-black/40 rounded-lg flex items-center justify-center text-4xl shadow-lg shrink-0 overflow-hidden">🎵</div>
                     <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2 mb-1">
-                            <span class="text-xs text-yellow-500 font-bold uppercase tracking-widest">Current Track</span>
-                            <span id="round-status" class="text-[10px] bg-white/10 px-2 py-0.5 rounded text-gray-300">Idle</span>
-                        </div>
+                        <div class="flex items-center gap-2 mb-1"><span class="text-xs text-yellow-500 font-bold uppercase tracking-widest">Current Track</span><span id="round-status" class="text-[10px] bg-white/10 px-2 py-0.5 rounded text-gray-300">Idle</span></div>
                         <h2 id="track-name" class="text-3xl font-black leading-tight truncate">Waiting...</h2>
                         <p id="artist-name" class="text-xl text-gray-400 truncate">---</p>
                     </div>
@@ -1167,8 +1083,6 @@
                         <div class="text-xs text-gray-500 uppercase mt-1">Seconds Elapsed</div>
                     </div>
                 </div>
-
-                <!-- Timeline Bar -->
                 <div id="timeline-container" class="mt-8 relative h-8 bg-black/30 rounded-xl w-full overflow-visible group transition-all duration-200">
                     <div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-xl opacity-80 pointer-events-none transition-all duration-75"></div>
                     <div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div>
@@ -1177,29 +1091,15 @@
                     </div>
                 </div>
             </div>
-
-            <!-- CONTROLS -->
             <div class="grid grid-cols-3 gap-4">
-                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
-                    ▶ Start Round
-                </button>
-                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">
-                    ⏭ Next Song
-                </button>
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>
-                    🔊 Reveal Music
-                </button>
+                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">▶ Start Round</button>
+                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">⏭ Next Song</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
             </div>
-
-            <!-- PLAYERS GRID -->
             <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll">
-                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    <!-- Player Cards -->
-                </div>
+                <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4"></div>
             </div>
-
         </div>
     </div>
-
 </body>
 </html>
