@@ -62,13 +62,16 @@
         .animate-float {
             animation: float-up 0.5s ease-out forwards;
         }
+
+        /* Confetti Animation */
         .confetti {
-            position: absolute; width: 10px; height: 10px; background: #ffd700;
-            animation: confetti-fall 3s linear infinite;
+            position: fixed; width: 10px; height: 10px; background: #ffd700;
+            z-index: 100; pointer-events: none;
+            animation: confetti-fall 3s linear forwards;
         }
         @keyframes confetti-fall {
-            0% { transform: translateY(-10vh) rotate(0deg); }
-            100% { transform: translateY(110vh) rotate(720deg); }
+            0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
         }
 
         #debug-log-container {
@@ -420,6 +423,20 @@
             showMainLobby();
         }
 
+        function triggerConfetti() {
+            for (let i = 0; i < 40; i++) {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                confetti.style.left = Math.random() * 100 + 'vw';
+                confetti.style.backgroundColor = ['#ffd700', '#ffffff', '#1DB954', '#ef4444'][Math.floor(Math.random() * 4)];
+                confetti.style.animationDelay = Math.random() * 2 + 's';
+                confetti.style.width = Math.random() * 8 + 4 + 'px';
+                confetti.style.height = confetti.style.width;
+                document.body.appendChild(confetti);
+                setTimeout(() => confetti.remove(), 5000);
+            }
+        }
+
         function updateHostUI(data) {
             const cutDisplay = document.getElementById('cutTimeDisplay');
             const cutSlider = document.getElementById('cutTimeSlider');
@@ -524,11 +541,14 @@
             let minDiff = Infinity;
             markers.forEach(m => {
                 m.classList.remove('marker-closest');
-                const pTime = parseFloat(m.innerText.split(' ')[1]);
+                const pTime = parseFloat(m.querySelector('.timeline-avatar')?.innerText.split(' ')[1] || "999");
                 const diff = Math.abs(audioElapsed - pTime);
                 if (diff < minDiff && diff < 1) { minDiff = diff; closestId = m.id; }
             });
-            if (closestId) document.getElementById(closestId).classList.add('marker-closest');
+            if (closestId) {
+                const el = document.getElementById(closestId);
+                if(el) el.classList.add('marker-closest');
+            }
         }
 
         function renderHostPlayers(data) {
@@ -780,8 +800,10 @@
             const offsetX = Math.max(0, Math.min(x - rect.left, rect.width));
             const seekTime = (offsetX / rect.width) * 60;
             localState.pauseTime = seekTime;
-            document.getElementById('gameTimer').innerText = seekTime.toFixed(2);
-            document.getElementById('timeline-progress').style.width = (offsetX/rect.width*100) + '%';
+            const timer = document.getElementById('gameTimer');
+            if(timer) timer.innerText = seekTime.toFixed(2);
+            const prog = document.getElementById('timeline-progress');
+            if(prog) prog.style.width = (offsetX/rect.width*100) + '%';
         };
 
         timelineContainer.onmousedown = (e) => {
@@ -896,9 +918,12 @@
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     if (localState.status !== 'lobby') {
-                        document.getElementById('track-name').innerText = track.name;
-                        document.getElementById('artist-name').innerText = track.artists[0].name;
-                        document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                        const t = document.getElementById('track-name');
+                        if(t) t.innerText = track.name;
+                        const a = document.getElementById('artist-name');
+                        if(a) a.innerText = track.artists[0].name;
+                        const art = document.getElementById('album-art');
+                        if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
                     if (localState.currentTrackUri !== track.uri) await updateDoc(roomRef, { currentTrackUri: track.uri });
                 }
@@ -914,8 +939,17 @@
             const buzzBtn = document.getElementById('player-buzz-btn'); const statusEl = document.getElementById('player-status');
             const scoreboard = document.getElementById('player-scoreboard'); const winOverlay = document.getElementById('win-overlay');
             if (data.status === 'playing' || data.status === 'revealing') { if (!localState.timerInterval) startLoop(); }
-            if (data.lastWinnerId === user.uid) { if(winOverlay) winOverlay.classList.remove('hidden'); if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]); } 
-            else { if(winOverlay) winOverlay.classList.add('hidden'); }
+            
+            if (data.lastWinnerId === user.uid) { 
+                if(winOverlay && winOverlay.classList.contains('hidden')) {
+                    winOverlay.classList.remove('hidden'); 
+                    triggerConfetti();
+                    if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 400]);
+                }
+            } else { 
+                if(winOverlay) winOverlay.classList.add('hidden'); 
+            }
+            
             if (!statusEl || !buzzBtn) return;
             if (data.status === 'playing') {
                 if (data.hasCut) {
@@ -975,22 +1009,22 @@
 
     <!-- LOBBY SCREEN -->
     <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
-        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2 text-center">Win When They're Singing</h1>
-        <p class="text-gray-400 mb-8">Multiplayer Edition</p>
+        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2 text-center uppercase">Win When They're Singing</h1>
+        <p class="text-gray-400 mb-8 font-bold tracking-widest uppercase text-xs">Multiplayer Edition</p>
         <div id="lobby-loading" class="text-center">
             <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
-            <p class="text-gray-400">Connecting...</p>
+            <p class="text-gray-400 uppercase text-xs font-black">Connecting...</p>
         </div>
         <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
             <div class="space-y-3">
                 <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
                 <div class="flex gap-2">
                     <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
-                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold uppercase rounded-lg text-lg shadow-lg">Join Game</button>
+                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">Join Game</button>
                 </div>
             </div>
-            <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-xs text-gray-500">OR</span></div></div>
-            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-bold text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
+            <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
+            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-black text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
         </div>
     </div>
 
@@ -998,13 +1032,13 @@
     <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
         <div id="player-audio-primer" class="hidden fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md">
             <div class="text-4xl mb-4">🔊</div>
-            <h2 class="text-2xl font-bold text-white mb-2">Spotify Linked!</h2>
+            <h2 class="text-2xl font-bold text-white mb-2 uppercase">Spotify Linked!</h2>
             <p class="text-sm text-gray-400 mb-6">Browsers require a tap to enable synchronized audio.</p>
             <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
         </div>
         <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
-            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
+            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
             <div class="flex items-center gap-3"><div class="text-right"><div class="text-[10px] text-gray-500 uppercase font-bold">Room</div><div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div></div></div>
         </header>
         <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
@@ -1012,6 +1046,7 @@
             <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase">Link</button>
         </div>
         <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
+            <!-- WIN OVERLAY -->
             <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
                 <div class="text-8xl mb-4">🏆</div><h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter uppercase">You Won!</h2><p class="text-xl text-white font-bold">The host awarded you a point!</p>
             </div>
