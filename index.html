@@ -124,7 +124,8 @@
             localAudioAnchor: null, 
             isSpotifyPlaying: false,
             localHasPaused: false,
-            isPendingNext: false
+            isPendingNext: false,
+            skippedTrackUri: null // Track URI we just skipped to prevent race conditions
         };
 
         function getFirebaseConfig() {
@@ -544,8 +545,8 @@
                 if(!localState.timerInterval) startLoop();
                 roundStatus.innerText = data.status === 'revealing' ? "Revealing" : "Paused";
                 revealBtn.disabled = false;
-                revealBtn.innerText = "Reveal Logic"; // Simplified for logic check
-                revealBtn.className = "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
+                revealBtn.innerText = data.status === 'revealing' ? "Pause Reveal" : "Resume Reveal";
+                revealBtn.className = data.status === 'revealing' ? "bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-xl shadow w-full" : "bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow w-full";
                 revealBtn.onclick = () => window.hostToggleReveal();
                 if(timelineContainer) timelineContainer.classList.add('interactive');
             } else {
@@ -959,8 +960,11 @@
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
-                    if (localState.isPendingNext && track.uri) {
+                    // --- AUTO START ON SKIP FIX ---
+                    // Only start the round if isPendingNext is true AND the track URI has actually changed
+                    if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
                         localState.isPendingNext = false;
+                        localState.skippedTrackUri = null;
                         gameLog("New song confirmed: " + track.name, "success");
                         const slider = document.getElementById('cutTimeSlider'); 
                         const cutTime = slider ? parseInt(slider.value) : 10;
@@ -1040,6 +1044,14 @@
 
         document.getElementById('nextRoundBtn').onclick = async () => {
              gameLog("⏭ Skipping Track...");
+             
+             // --- SKIP VERIFICATION SETUP ---
+             // Record the current track to ensure the listener waits for a different one
+             if (playerInstance) {
+                const state = await playerInstance.getCurrentState();
+                localState.skippedTrackUri = state?.track_window?.current_track?.uri || null;
+             }
+             
              localState.isPendingNext = true;
              localState.localAudioAnchor = null; 
              localState.localHasPaused = false;
@@ -1169,7 +1181,7 @@
                 <div class="flex gap-4 items-center"><div id="album-art" class="w-20 h-20 bg-black/40 rounded-lg flex items-center justify-center shrink-0 overflow-hidden text-2xl">🎵</div><div class="flex-1 min-w-0"><div id="round-status" class="text-[10px] uppercase font-black text-yellow-500 mb-1 tracking-widest">Lobby</div><h2 id="track-name" class="text-2xl font-black leading-tight truncate uppercase">Waiting...</h2><p id="artist-name" class="text-sm text-gray-400 truncate">---</p></div><div class="text-right shrink-0"><div id="gameTimer" class="text-4xl font-mono font-bold text-white tabular-nums">0.00</div><div class="text-[9px] text-gray-500 uppercase mt-0.5">Sync</div></div></div>
                 <div id="timeline-container" class="mt-4 relative h-6 bg-black/30 rounded-lg w-full overflow-visible touch-none"><div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-lg opacity-80 pointer-events-none transition-all duration-75"></div><div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div><div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none" style="left: 16%;"></div></div>
             </div>
-            <div class="grid grid-cols-3 gap-3 shrink-0"><button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Start Round</button><button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Next Song</button><button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3.5 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 text-sm uppercase" disabled>Reveal</button></div>
+            <div class="grid grid-cols-3 gap-3 shrink-0"><button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Start Round</button><button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-3.5 rounded-xl shadow-lg transition active:translate-y-1 text-sm uppercase">Next Song</button><button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3.5 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 text-sm uppercase" disabled>Reveal Music</button></div>
             <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
         </div>
     </div>
