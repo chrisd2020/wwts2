@@ -102,7 +102,6 @@
             isTestMode: false,
             
             // localAudioAnchor: Date.now() minus Spotify position in ms.
-            // Result is: (Date.now() - localAudioAnchor) / 1000 = current position in seconds.
             localAudioAnchor: null, 
             isSpotifyPlaying: false
         };
@@ -117,6 +116,7 @@
         }
 
         window.clearFirebaseConfig = () => {
+            localStorage.removeItem('wwts_active_room_id');
             localStorage.removeItem('wwts_firebase_config');
             window.location.reload();
         };
@@ -307,7 +307,7 @@
                 }
                 const data = doc.data();
                 
-                // --- ULTRA-FAST BUZZER TRIGGER (HIGHEST PRIORITY) ---
+                // --- ULTRA-FAST BUZZER TRIGGER ---
                 if (role === 'player' && data.status === 'playing' && data.hasCut) {
                     const buzzBtn = document.getElementById('player-buzz-btn');
                     if (buzzBtn && buzzBtn.disabled) {
@@ -334,10 +334,9 @@
                     window.hostResetRound(); 
                 }
 
-                // Update Local State for comparisons
+                // Update Local State tracking
                 localState.players = data.players || [];
                 const oldStatus = localState.status;
-                const oldHasCut = localState.hasCut;
                 const oldTrackUri = localState.currentTrackUri;
 
                 localState.status = data.status;
@@ -348,14 +347,16 @@
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
-                // Reset anchor on state transitions back to lobby or clean starts
-                if (localState.status === 'lobby' || (oldStatus !== 'playing' && localState.status === 'playing')) {
+                // --- ROBUST ANCHOR RESET ---
+                const songChanged = oldTrackUri !== localState.currentTrackUri;
+                const roundRestarted = (oldStatus !== 'playing' && localState.status === 'playing');
+                if (localState.status === 'lobby' || songChanged || roundRestarted) {
                     localState.localAudioAnchor = null;
                 }
 
                 // --- REMOTE AUDIO SYNC LOGIC ---
                 if (role === 'player' && playerInstance && localState.currentTrackUri) {
-                    handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri);
+                    handlePlayerAudioSync(oldStatus, data.hasCut, oldTrackUri);
                 }
 
                 if (role === 'host') updateHostUI(data);
@@ -365,23 +366,26 @@
             });
         }
 
-        async function handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri) {
+        async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
             if (!playerInstance || !deviceId) return;
 
-            const shouldPlayOnClient = (localState.status === 'playing' && (!localState.hasCut || localState.isTestMode));
+            const shouldPlayOnClient = (localState.status === 'playing' && (!hasCut || localState.isTestMode));
 
             if (shouldPlayOnClient) {
-                const targetPosition = Date.now() - localState.startTime;
+                const targetPosition = Math.max(0, Date.now() - localState.startTime);
                 
                 const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
-                const needsTestUncut = (oldHasCut && !localState.isTestMode);
-                const isIncorrectlyPaused = localState.isTestMode && !localState.isSpotifyPlaying && localState.status === 'playing';
+                
+                if (needsInitialPlay) {
+                    if (localState.localAudioAnchor === null) {
+                        localState.localAudioAnchor = Date.now() - targetPosition;
+                    }
 
-                if (needsInitialPlay || needsTestUncut || isIncorrectlyPaused) {
                     try {
+                        const tokenToUse = await getValidToken();
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                            method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: targetPosition })
                         });
                     } catch(e) { console.error("Sync Play Error:", e); }
                 }
@@ -549,14 +553,11 @@
                     return; 
                 }
                 
-                // Audio-Synced elapsed time for BOTH host and player.
-                // It stays at 0.00 until Spotify reports starting.
                 let audioElapsed = 0;
                 if (localState.localAudioAnchor !== null) {
                     audioElapsed = (Date.now() - localState.localAudioAnchor) / 1000;
                 }
 
-                // If round is complete or paused, we freeze at the final pause time
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     audioElapsed = localState.pauseTime;
                 }
@@ -581,12 +582,10 @@
                     if (playerProgress) playerProgress.style.width = Math.min((pElapsed/60)*100, 100) + '%';
                 }
 
-                // Highlight logic and auto-cut
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(audioElapsed);
                 }
                 
-                // Host triggers Auto-Cut based on EXACT audio position
                 if(localState.status === 'playing' && document.getElementById('autoCutToggle').checked && !localState.hasCut && audioElapsed >= localState.autoCutTime) {
                     window.hostTriggerCut();
                 }
@@ -615,7 +614,6 @@
             const data = snap.data();
             const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
 
-            // Clear anchor so timer stays at 0.00 until music actually hits speakers
             localState.localAudioAnchor = null;
 
             await updateDoc(roomRef, {
@@ -632,12 +630,13 @@
             if(playerInstance) {
                 await playerInstance.setVolume(0.8);
                 if (data.queuedPlaylist) {
+                    const tokenToUse = await getValidToken();
                     await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}` }
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
                     });
                     
                     await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                     });
                 } else {
@@ -789,7 +788,6 @@
                 const appId = window.__app_id || 'wwts-game'; 
                 const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                 
-                // Immediately update local anchor to prevent visual jump
                 localState.localAudioAnchor = Date.now() - (seconds * 1000);
 
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
@@ -915,7 +913,6 @@
             const btn = document.getElementById('player-buzz-btn');
             btn.innerText = "SENDING...";
             
-            // Consistent access to the sync anchor
             let buzzedAtSeconds = localState.localAudioAnchor ? (Date.now() - localState.localAudioAnchor) / 1000 : 0;
             const elapsed = Math.max(0, buzzedAtSeconds);
             
@@ -943,7 +940,7 @@
             } catch(e) { console.error("Buzz failed", e); btn.innerText = "RETRY"; }
         };
 
-        // --- SPOTIFY ---
+        // --- SPOTIFY AUTH & PLAYER ---
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
         let token = localStorage.getItem('wwts_host_token');
@@ -973,6 +970,36 @@
              const rUriDisplay = document.getElementById('redirectUriDisplay');
              if(rUriDisplay) rUriDisplay.innerText = redirect;
         });
+
+        async function getValidToken() {
+            const expiry = parseInt(localStorage.getItem('wwts_token_expiry') || '0');
+            const refreshToken = localStorage.getItem('wwts_refresh_token');
+            const clientId = localStorage.getItem(CLIENT_ID_KEY);
+
+            // Refresh if token is expired or expires in the next 2 minutes
+            if (Date.now() > (expiry - 120000) && refreshToken && clientId) {
+                try {
+                    const res = await fetch('https://accounts.spotify.com/api/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            grant_type: 'refresh_token',
+                            refresh_token: refreshToken,
+                            client_id: clientId
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.access_token) {
+                        localStorage.setItem('wwts_host_token', data.access_token);
+                        localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
+                        if (data.refresh_token) localStorage.setItem('wwts_refresh_token', data.refresh_token);
+                        token = data.access_token;
+                        return token;
+                    }
+                } catch(e) { console.error("Refresh Error:", e); }
+            }
+            return token;
+        }
 
         function updateAuthUI() {
              const hStatus = document.getElementById('status-indicator');
@@ -1013,11 +1040,22 @@
             try {
                 const res = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
                 const data = await res.json();
-                if (data.access_token) { localStorage.setItem('wwts_host_token', data.access_token); token = data.access_token; window.location.href = redirectUri; }
+                if (data.access_token) { 
+                    localStorage.setItem('wwts_host_token', data.access_token); 
+                    localStorage.setItem('wwts_refresh_token', data.refresh_token);
+                    localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
+                    token = data.access_token; 
+                    window.location.href = redirectUri; 
+                }
             } catch(e) { console.error(e); }
         }
 
-        window.logout = () => { localStorage.removeItem('wwts_host_token'); window.location.reload(); };
+        window.logout = () => { 
+            localStorage.removeItem('wwts_host_token'); 
+            localStorage.removeItem('wwts_refresh_token'); 
+            localStorage.removeItem('wwts_token_expiry');
+            window.location.reload(); 
+        };
 
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
@@ -1025,16 +1063,20 @@
         function initSpotifyPlayer() {
             if(playerInit) return;
             playerInit = true;
-            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: cb => { cb(token); }, volume: 0.8 });
+            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: async cb => { 
+                const validToken = await getValidToken();
+                cb(validToken); 
+            }, volume: 0.8 });
             
             playerInstance.addListener('ready', async ({ device_id }) => { 
                 deviceId = device_id; 
                 updateAuthUI(); 
                 
                 try {
+                    const tokenToUse = await getValidToken();
                     await fetch('https://api.spotify.com/v1/me/player', {
                         method: 'PUT',
-                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ device_ids: [device_id], play: false })
                     });
                 } catch(e) { console.error("Transfer error:", e); }
@@ -1043,20 +1085,26 @@
                     document.getElementById('player-audio-primer').classList.remove('hidden');
                 }
             });
+
+            playerInstance.addListener('authentication_error', ({ message }) => {
+                console.error("Spotify Auth Error:", message);
+                const pStatus = document.getElementById('player-spotify-status');
+                if(pStatus) {
+                    pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> Re-link Spotify';
+                    pStatus.className = 'flex items-center gap-2 text-[10px] text-red-400 font-bold bg-red-500/10 px-3 py-1 rounded-full border border-red-500/20';
+                    document.getElementById('player-spotify-auth')?.classList.remove('hidden');
+                }
+            });
             
             playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
                 
-                // CONTINUOUS AUDIO ANCHOR UPDATE
-                // We update the anchor while the song is playing to stay perfectly locked to Spotify.
                 if (!state.paused) {
                     localState.localAudioAnchor = Date.now() - state.position;
                     localState.isSpotifyPlaying = true;
                 } else {
                     localState.isSpotifyPlaying = false;
-                    // Note: If paused (the CUT), we do NOT clear the anchor.
-                    // This allows the clock to continue counting naturally based on where the audio stopped.
                 }
 
                 if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
@@ -1107,8 +1155,9 @@
 
         searchBtn.onclick = async () => {
             const query = searchInput.value;
-            if(!token) return alert("Log in first");
-            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const tokenToUse = await getValidToken();
+            if(!tokenToUse) return alert("Log in first");
+            const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { headers: { 'Authorization': `Bearer ${tokenToUse}` } });
             const data = await res.json();
             if (!data.playlists || !data.playlists.items) { document.getElementById('results').innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">No results found</div>'; return; }
             document.getElementById('results').innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
@@ -1320,7 +1369,7 @@
             <div class="grid grid-cols-3 gap-4">
                 <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">▶ Start Round</button>
                 <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1">⏭ Next Song</button>
-                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow-[0_0_20_rgba(22,163,74,0.3)] transition disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-1" disabled>🔊 Reveal Music</button>
             </div>
             <div class="flex-1 bg-black/20 rounded-xl p-4 overflow-y-auto custom-scroll">
                 <div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4"></div>
