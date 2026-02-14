@@ -370,7 +370,12 @@
                 const targetPosition = Date.now() - localState.startTime;
                 
                 // Play if we just entered the listening state, changed tracks, or just un-cut
-                if (oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri || (oldHasCut && !localState.isTestMode)) {
+                // In Test Mode, if it's supposed to play but is paused, we also restart/resume
+                const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
+                const needsTestUncut = (oldHasCut && !localState.isTestMode);
+                const isIncorrectlyPaused = localState.isTestMode && !localState.isSpotifyPlaying && localState.status === 'playing';
+
+                if (needsInitialPlay || needsTestUncut || isIncorrectlyPaused) {
                     try {
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
                             method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -546,8 +551,7 @@
                 
                 let currentPosSeconds = 0;
                 
-                // For the Host, we use the raw clock for the timer during reveal/playing
-                // But for the Player, we now prioritize the Spotify internal clock
+                // Global Clock
                 let elapsed = 0;
                 if (localState.status === 'playing' || localState.status === 'revealing') {
                     elapsed = (Date.now() - localState.startTime) / 1000;
@@ -563,7 +567,7 @@
                     currentPosSeconds = localState.spotifyPos / 1000;
                 }
 
-                // Update Host Timer (Raw time for general UI, but markers use recorded buzzedAt)
+                // Update Host Timer
                 const hostTimer = document.getElementById('gameTimer');
                 if (hostTimer) hostTimer.innerText = elapsed.toFixed(2);
                 
@@ -580,9 +584,14 @@
                     if (me && me.buzzedAt !== null) {
                         pElapsed = me.buzzedAt;
                     } else {
-                        // In "listen" phase, timer stays at 0 until Spotify starts
-                        // In "playing" phase, timer is exactly the song position
-                        pElapsed = Math.max(0, currentPosSeconds);
+                        // FIX: If we are in Sync Test Mode and the local Spotify player stops/pauses
+                        // (perhaps due to account conflict or cutoff logic), we fallback to the global 
+                        // game clock so the visual timer doesn't freeze at the cut point.
+                        if (localState.isTestMode && localState.status === 'playing' && !localState.isSpotifyPlaying) {
+                            pElapsed = elapsed;
+                        } else {
+                            pElapsed = Math.max(0, currentPosSeconds);
+                        }
                     }
                     
                     if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
