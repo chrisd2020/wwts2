@@ -97,7 +97,8 @@
             pauseTime: 0,
             autoCutTime: 10,
             isDragging: false,
-            timerInterval: null
+            timerInterval: null,
+            currentTrackUri: null
         };
 
         function getFirebaseConfig() {
@@ -221,7 +222,8 @@
                     pauseTime: 0,
                     hasCut: false,
                     queuedPlaylist: null,
-                    lastWinnerId: null
+                    lastWinnerId: null,
+                    currentTrackUri: null
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -325,18 +327,63 @@
                     window.hostResetRound(); 
                 }
 
+                // Update Local State for comparisons
                 localState.players = data.players || [];
+                const oldStatus = localState.status;
+                const oldHasCut = localState.hasCut;
+                const oldTrackUri = localState.currentTrackUri;
+
                 localState.status = data.status;
                 localState.hasCut = data.hasCut;
                 localState.startTime = data.startTime || 0;
                 localState.pauseTime = data.pauseTime || 0;
                 localState.autoCutTime = data.autoCutTime || 10;
+                localState.currentTrackUri = data.currentTrackUri;
+
+                // --- REMOTE AUDIO SYNC LOGIC ---
+                if (role === 'player' && playerInstance && localState.currentTrackUri) {
+                    handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri);
+                }
 
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
             }, (error) => {
                 console.error("Snapshot error:", error);
             });
+        }
+
+        async function handlePlayerAudioSync(oldStatus, oldHasCut, oldTrackUri) {
+            if (!playerInstance || !deviceId) return;
+
+            // 1. If song changed or round started
+            if (localState.status === 'playing') {
+                if (localState.hasCut) {
+                    if (!oldHasCut) playerInstance.pause();
+                } else {
+                    // Need to play/sync
+                    const targetPosition = Date.now() - localState.startTime;
+                    if (oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri) {
+                        // Start fresh
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
+                        });
+                    }
+                }
+            } else if (localState.status === 'revealing') {
+                const targetPosition = Date.now() - localState.startTime;
+                if (oldStatus !== 'revealing') {
+                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                        method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: Math.max(0, targetPosition) })
+                    });
+                }
+            } else {
+                // Lobby, Complete, or Paused
+                if (oldStatus === 'playing' || oldStatus === 'revealing') {
+                    playerInstance.pause();
+                }
+            }
         }
 
         function handleLogout() {
@@ -347,6 +394,7 @@
             document.getElementById('player-screen').classList.add('hidden');
             document.getElementById('host-screen').classList.add('hidden');
             document.getElementById('lobby-screen').classList.remove('hidden');
+            if (playerInstance) playerInstance.disconnect();
             showMainLobby();
         }
 
@@ -544,10 +592,9 @@
                 lastWinnerId: null
             });
 
-            if(player) {
-                await player.setVolume(0.8);
+            if(playerInstance) {
+                await playerInstance.setVolume(0.8);
                 if (data.queuedPlaylist) {
-                    // SHUFFLE ENABLE: Ensure shuffle is true for this session
                     await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
                         method: 'PUT', headers: { 'Authorization': `Bearer ${token}` }
                     });
@@ -557,8 +604,8 @@
                         body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                     });
                 } else {
-                    await player.seek(0);
-                    await player.resume();
+                    await playerInstance.seek(0);
+                    await playerInstance.resume();
                 }
             }
         };
@@ -570,10 +617,10 @@
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.05);
-                if(player) player.setVolume(vol);
+                if(playerInstance) playerInstance.setVolume(vol);
                 if(vol <= 0) {
                     clearInterval(fade);
-                    if(player) player.pause();
+                    if(playerInstance) playerInstance.pause();
                 }
             }, 50);
         };
@@ -591,7 +638,7 @@
             if (localState.status === 'revealing') {
                 const elapsed = (Date.now() - localState.startTime) / 1000;
                 await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: elapsed });
-                if(player) player.pause();
+                if(playerInstance) playerInstance.pause();
             } else {
                 let startOffset = 0;
                 if (localState.status === 'paused_reveal') {
@@ -600,10 +647,10 @@
                     startOffset = 0;
                 }
                 await updateDoc(roomRef, { status: 'revealing', startTime: Date.now() - startOffset });
-                if(player) {
-                    await player.setVolume(0.8);
-                    await player.seek(startOffset);
-                    await player.resume();
+                if(playerInstance) {
+                    await playerInstance.setVolume(0.8);
+                    await playerInstance.seek(startOffset);
+                    await playerInstance.resume();
                 }
             }
         };
@@ -615,7 +662,7 @@
              const players = snap.data().players || [];
              const cleanPlayers = players.map(p => ({...p, buzzedAt: null}));
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0 });
-             if(player) player.pause();
+             if(playerInstance) playerInstance.pause();
         };
 
         window.awardWin = async (pid) => {
@@ -638,7 +685,7 @@
                         pauseTime: 0
                     });
                 });
-                if(player) player.pause();
+                if(playerInstance) playerInstance.pause();
              } catch(e) { console.error("Award win error", e); }
         };
 
@@ -698,7 +745,7 @@
                 } else if (localState.status === 'revealing') {
                      await updateDoc(roomRef, { startTime: Date.now() - (seconds * 1000) });
                 }
-                if(player) await player.seek(seconds * 1000);
+                if(playerInstance) await playerInstance.seek(seconds * 1000);
             }
         });
         function handleScrub(e) {
@@ -742,7 +789,6 @@
             const winOverlay = document.getElementById('win-overlay');
 
             if (data.status === 'playing' && data.hasCut) {
-                // If snap listener didn't catch it, double check here
                 if (buzzBtn && buzzBtn.disabled) {
                     const myData = data.players.find(p => p.id === user.uid);
                     if (myData && !myData.buzzedAt) {
@@ -835,7 +881,7 @@
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
         let token = localStorage.getItem('wwts_host_token');
-        let player = null;
+        let playerInstance = null;
 
         function generateRandomString(length) {
             let text = '';
@@ -856,23 +902,31 @@
              if (code) { await exchangeToken(code); } 
              if(token) updateAuthUI();
              const storedId = localStorage.getItem(CLIENT_ID_KEY);
-             if(storedId) document.getElementById('clientIdInput').value = storedId;
+             if(storedId) document.querySelectorAll('.client-id-input').forEach(i => i.value = storedId);
              const redirect = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
              const rUriDisplay = document.getElementById('redirectUriDisplay');
              if(rUriDisplay) rUriDisplay.innerText = redirect;
         });
 
         function updateAuthUI() {
-             const status = document.getElementById('status-indicator');
-             if(status) {
-                 status.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
-                 status.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
+             const hStatus = document.getElementById('status-indicator');
+             if(hStatus) {
+                 hStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected';
+                 hStatus.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400';
              }
              document.getElementById('auth-panel')?.classList.add('hidden');
+             
+             const pStatus = document.getElementById('player-spotify-status');
+             if(pStatus) {
+                 pStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked';
+                 pStatus.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20';
+             }
+             document.getElementById('player-spotify-auth')?.classList.add('hidden');
         }
 
-        window.startLogin = async () => {
-            const clientId = document.getElementById('clientIdInput').value.trim();
+        window.startLogin = async (isPlayerLogin = false) => {
+            const inputId = isPlayerLogin ? 'playerClientIdInput' : 'clientIdInput';
+            const clientId = document.getElementById(inputId).value.trim();
             if(!clientId) return alert("Enter Client ID");
             localStorage.setItem(CLIENT_ID_KEY, clientId);
             const verifier = generateRandomString(128);
@@ -905,22 +959,37 @@
         function initSpotifyPlayer() {
             if(playerInit) return;
             playerInit = true;
-            player = new Spotify.Player({ name: "WWTS Host", getOAuthToken: cb => { cb(token); }, volume: 0.8 });
-            player.addListener('ready', ({ device_id }) => { deviceId = device_id; updateAuthUI(); player.pause(); });
-            player.addListener('player_state_changed', state => {
+            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: cb => { cb(token); }, volume: 0.8 });
+            playerInstance.addListener('ready', ({ device_id }) => { deviceId = device_id; updateAuthUI(); playerInstance.pause(); });
+            
+            playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
-                if (localState.status !== 'lobby') {
-                    document.getElementById('track-name').innerText = track.name;
-                    document.getElementById('artist-name').innerText = track.artists[0].name;
-                    document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                
+                // --- HOST BROADCAST LOGIC ---
+                // If I'm the host, I broadcast what's playing so clients can sync
+                if (roomId && !document.getElementById('host-screen').classList.contains('hidden')) {
+                    const appId = window.__app_id || 'wwts-game'; 
+                    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                    
+                    // Display on Host UI
+                    if (localState.status !== 'lobby') {
+                        document.getElementById('track-name').innerText = track.name;
+                        document.getElementById('artist-name').innerText = track.artists[0].name;
+                        document.getElementById('album-art').innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                    }
+
+                    // Update database for clients
+                    if (localState.currentTrackUri !== track.uri) {
+                        await updateDoc(roomRef, { currentTrackUri: track.uri });
+                    }
                 }
             });
-            player.connect();
+            playerInstance.connect();
         }
 
         document.getElementById('nextRoundBtn').onclick = async () => {
-             if(player) { await player.setVolume(0.8); await player.nextTrack(); }
+             if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.nextTrack(); }
              const appId = window.__app_id || 'wwts-game'; 
              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const cutTime = parseInt(document.getElementById('cutTimeSlider').value);
@@ -1020,12 +1089,15 @@
 
     <!-- PLAYER SCREEN (Remote) -->
     <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
-        <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md">
+        <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left">
                 <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
                 <div id="player-name-display" class="font-bold text-white text-lg leading-none">---</div>
+                <div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold">
+                    <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host
+                </div>
             </div>
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-3">
                 <div class="text-right">
                     <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
                     <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
@@ -1033,6 +1105,15 @@
                 <button onclick="playerLeave()" class="bg-red-600/20 hover:bg-red-600/40 text-red-500 text-[10px] font-bold px-3 py-1.5 rounded-full border border-red-500/30 transition uppercase tracking-wider">Leave</button>
             </div>
         </header>
+
+        <!-- Remote Audio Setup -->
+        <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
+            <div class="flex-1 pr-4">
+                <p class="text-[10px] font-bold text-green-400 leading-tight">Hear music on this device? (Spotify Premium)</p>
+                <input id="playerClientIdInput" class="client-id-input w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] mt-1" placeholder="Paste Client ID">
+            </div>
+            <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase shadow-lg">Link</button>
+        </div>
 
         <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
             <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
@@ -1075,7 +1156,7 @@
             <div class="glass p-4 rounded-xl space-y-4">
                 <div id="auth-panel">
                      <button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded">Spotify Login</button>
-                     <input id="clientIdInput" class="w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
+                     <input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID">
                      <div id="redirectUriDisplay" class="hidden"></div>
                 </div>
                 <div class="flex justify-between items-center border-t border-white/10 pt-4"><label class="text-xs font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div>
