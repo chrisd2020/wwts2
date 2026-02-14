@@ -552,8 +552,27 @@
                 } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     elapsed = localState.pauseTime;
                 }
-                document.getElementById('gameTimer').innerText = elapsed.toFixed(2);
-                document.getElementById('timeline-progress').style.width = Math.min((elapsed/60)*100, 100) + '%';
+
+                // Update Host Timer
+                const hostTimer = document.getElementById('gameTimer');
+                if (hostTimer) hostTimer.innerText = elapsed.toFixed(2);
+                
+                const hostProgress = document.getElementById('timeline-progress');
+                if (hostProgress) hostProgress.style.width = Math.min((elapsed/60)*100, 100) + '%';
+
+                // Update Player Timer (Freeze if already buzzed)
+                const playerTimer = document.getElementById('player-game-timer');
+                const playerProgress = document.getElementById('player-timeline-progress');
+                if (playerTimer || playerProgress) {
+                    let pElapsed = elapsed;
+                    const me = localState.players.find(p => p.id === user.uid);
+                    if (me && me.buzzedAt !== null) {
+                        pElapsed = me.buzzedAt;
+                    }
+                    if (playerTimer) playerTimer.innerText = pElapsed.toFixed(2);
+                    if (playerProgress) playerProgress.style.width = Math.min((pElapsed/60)*100, 100) + '%';
+                }
+
                 if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
                      highlightClosest(elapsed);
                 }
@@ -791,6 +810,10 @@
             const buzzContainer = document.getElementById('buzz-container');
             const scoreboard = document.getElementById('player-scoreboard');
             const winOverlay = document.getElementById('win-overlay');
+
+            if (data.status === 'playing' || data.status === 'revealing') {
+                if (!localState.timerInterval) startLoop();
+            }
 
             if (data.status === 'playing' && data.hasCut) {
                 if (buzzBtn && buzzBtn.disabled) {
@@ -1127,6 +1150,11 @@
             <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
         </div>
 
+        <!-- Progress Bar at top of player screen -->
+        <div class="h-1 w-full bg-white/5 overflow-hidden">
+            <div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div>
+        </div>
+
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left">
                 <div class="text-[10px] text-gray-500 uppercase font-bold">Player</div>
@@ -1169,7 +1197,15 @@
             <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
                 <div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div>
             </div>
-            <div id="player-status" class="text-xl text-gray-400 mb-6 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
+            
+            <div id="player-status" class="text-xl text-gray-400 mb-2 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
+            
+            <!-- Player Synchronized Timer -->
+            <div class="mb-8 flex flex-col items-center z-10">
+                <div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Seconds Elapsed</div>
+            </div>
+
             <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">
                 WAIT
             </button>
