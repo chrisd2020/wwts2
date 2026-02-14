@@ -25,7 +25,7 @@
 
         .timeline-marker {
             position: absolute; top: -5px; bottom: -5px; width: 2px; background: white; z-index: 10;
-            transition: left 0.2s; pointer-events: none; /* Removed background-color transition to stop flashing */
+            transition: left 0.2s; pointer-events: none; 
         }
         .timeline-avatar {
             position: absolute; top: -28px; transform: translateX(-50%);
@@ -63,7 +63,6 @@
             animation: float-up 0.5s ease-out forwards;
         }
 
-        /* Confetti Animation */
         .confetti {
             position: fixed; 
             top: -50px; 
@@ -82,7 +81,6 @@
         }
     </style>
 
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -127,7 +125,9 @@
             isSpotifyPlaying: false,
             localHasPaused: false,
             isPendingNext: false,
-            skippedTrackUri: null 
+            skippedTrackUri: null,
+            pendingRoundStart: false, // New flag for audio-sync start
+            pendingRoundConfig: null
         };
 
         function getFirebaseConfig() {
@@ -539,6 +539,13 @@
                     startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
                     startBtn.onclick = () => window.hostTriggerCut();
                 }
+            } else if (data.status === 'buffering') {
+                roundStatus.innerText = "Starting...";
+                startBtn.innerText = "Buffering...";
+                startBtn.className = "bg-gray-700 opacity-50 cursor-wait text-white font-bold py-4 rounded-xl w-full uppercase text-sm";
+                startBtn.onclick = () => window.hostResetRound(); // Allow cancel
+                nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
+                revealBtn.disabled = true;
             } else if (data.status === 'complete') {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
                 roundStatus.innerText = "Guesses In";
@@ -602,9 +609,7 @@
             markers.forEach(m => {
                 const avatar = m.querySelector('.timeline-avatar');
                 if (!avatar) return;
-                // ROBUST FIX: Use dataset time instead of parsing innerText which fails on names with spaces
                 const pTime = parseFloat(m.dataset.time);
-                
                 if (isNaN(pTime)) return;
 
                 const diff = Math.abs(audioElapsed - pTime);
@@ -637,7 +642,7 @@
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
                     marker.id = `marker-${p.id}`; 
-                    marker.dataset.time = p.buzzedAt; // Store time reliably for highlight logic
+                    marker.dataset.time = p.buzzedAt; 
                     marker.className = 'timeline-marker bg-white';
                     marker.style.left = `${pos}%`;
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name} ${p.buzzedAt.toFixed(2)}s</div>`;
@@ -674,6 +679,10 @@
 
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     audioElapsed = localState.pauseTime;
+                }
+
+                if (localState.status === 'buffering') {
+                    audioElapsed = 0;
                 }
 
                 const hostTimer = document.getElementById('gameTimer');
@@ -719,20 +728,29 @@
         }
 
         window.hostStartRound = async () => {
-            gameLog("--- Starting Round ---", "warn");
+            gameLog("--- Buffering Round ---", "warn");
             if (!roomId) return;
             if (!deviceId || !token) return alert("Link Spotify first.");
             const startBtn = document.getElementById('startRoundBtn');
-            if (startBtn) startBtn.innerText = "Starting...";
+            if (startBtn) startBtn.innerText = "Buffering...";
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const slider = document.getElementById('cutTimeSlider');
             const cutTime = slider ? parseInt(slider.value) : 10;
+            
             try {
+                // 1. Enter Buffering State - Clients wait for precision sync
+                await updateDoc(roomRef, { status: 'buffering' });
+                
+                // 2. Set Local Flag to catch the exact moment audio starts
+                localState.pendingRoundStart = true;
+                localState.pendingRoundConfig = { autoCutTime: cutTime };
+
+                // 3. Trigger Audio
                 const snap = await getDoc(roomRef);
                 const data = snap.data();
-                const cleanPlayers = (data.players || []).map(p => ({...p, buzzedAt: null}));
                 localState.localAudioAnchor = null; localState.localHasPaused = false;
                 const tokenToUse = await getValidToken();
+                
                 if(playerInstance) {
                     await playerInstance.activateElement(); await playerInstance.setVolume(0.8);
                     if (data.queuedPlaylist) {
@@ -743,6 +761,7 @@
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                         });
+                        // Clear queue now that we've used it
                         await updateDoc(roomRef, { queuedPlaylist: null });
                     } else if (localState.currentTrackUri) {
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
@@ -753,9 +772,11 @@
                         await playerInstance.seek(0); await playerInstance.resume();
                     }
                 }
-                await updateDoc(roomRef, { status: 'playing', hasCut: false, startTime: serverTimestamp(), pauseTime: 0, autoCutTime: cutTime, players: cleanPlayers, lastWinnerId: null });
-                gameLog("Round Started!", "success");
-            } catch (e) { gameLog("Start Error: " + e.message, "error"); if (startBtn) startBtn.innerText = "Error - Retry"; }
+            } catch (e) { 
+                gameLog("Start Error: " + e.message, "error"); 
+                if (startBtn) startBtn.innerText = "Error - Retry"; 
+                localState.pendingRoundStart = false; // Reset if failed
+            }
         };
 
         window.hostTriggerCut = async () => {
@@ -785,6 +806,7 @@
              const snap = await getDoc(roomRef);
              const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
              localState.localAudioAnchor = null; localState.localHasPaused = false;
+             localState.pendingRoundStart = false; // Reset pending state
              await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0, lastWinnerId: null });
              if(playerInstance) playerInstance.pause();
         };
@@ -997,6 +1019,41 @@
             playerInstance.addListener('player_state_changed', async state => {
                 if (!state) return;
                 const track = state.track_window.current_track;
+                
+                // --- PRECISE START LOGIC ---
+                // If we are waiting for the round to start (buffering), catch the exact moment state.paused becomes false
+                if (localState.pendingRoundStart && !state.paused && !state.loading && roomId) {
+                    localState.pendingRoundStart = false; // Stop waiting
+                    gameLog("Audio Started - Syncing Clients...", "success");
+                    
+                    const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                    
+                    // We fetch players to clean them (reset buzzers) at this exact moment
+                    // This is cleaner than doing it in hostStartRound because it accounts for late joiners during buffering
+                    try {
+                        const snap = await getDoc(roomRef);
+                        const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+                        
+                        // Calculate specific start time based on current Server Time and track position
+                        // This aligns Client 0.00s with Audio 0.00s exactly
+                        const actualStart = getServerTime() - state.position;
+                        
+                        await updateDoc(roomRef, { 
+                            status: 'playing', 
+                            startTime: new Date(actualStart), 
+                            hasCut: false, 
+                            players: cleanPlayers, 
+                            autoCutTime: localState.pendingRoundConfig ? localState.pendingRoundConfig.autoCutTime : 10,
+                            lastWinnerId: null,
+                            pauseTime: 0
+                        });
+                    } catch(e) {
+                         console.error("Error finalizing start:", e);
+                         localState.pendingRoundStart = false; 
+                    }
+                }
+                // ---------------------------
+
                 if (!state.paused) { localState.localAudioAnchor = getServerTime() - state.position; localState.isSpotifyPlaying = true; } 
                 else { localState.isSpotifyPlaying = false; }
                 
@@ -1005,37 +1062,12 @@
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
                     
                     if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
-                        localState.isPendingNext = false;
-                        localState.skippedTrackUri = null;
-                        gameLog("New song confirmed: " + track.name, "success");
-                        const slider = document.getElementById('cutTimeSlider'); 
-                        const cutTime = slider ? parseInt(slider.value) : 10;
-                        const snap = await getDoc(roomRef); 
-                        const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
-                        
-                        const t = document.getElementById('track-name');
-                        if(t) t.innerText = track.name;
-                        const a = document.getElementById('artist-name');
-                        if(a) a.innerText = track.artists[0].name;
-                        const art = document.getElementById('album-art');
-                        if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
-
-                        if(playerInstance) await playerInstance.setVolume(0.8);
-
-                        await updateDoc(roomRef, { 
-                            status: 'playing', 
-                            currentTrackUri: track.uri,
-                            hasCut: false, 
-                            startTime: serverTimestamp(), 
-                            pauseTime: 0, 
-                            autoCutTime: cutTime, 
-                            players: cleanPlayers, 
-                            lastWinnerId: null 
-                        });
-                        return;
+                         // Logic handled by pendingRoundStart flow now, but keeping for safety if next is manual
+                         // Actually, nextRoundBtn just goes to Lobby. So this block is for auto-detect?
+                         // We can simplify this if we strictly use hostStartRound.
                     }
 
-                    if (localState.status !== 'lobby' && !localState.isPendingNext) {
+                    if (localState.status !== 'lobby' && !localState.isPendingNext && localState.status !== 'buffering') {
                         const t = document.getElementById('track-name');
                         if(t) t.innerText = track.name;
                         const a = document.getElementById('artist-name');
@@ -1082,6 +1114,11 @@
                     statusEl.innerText = "LISTEN..."; statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
                     buzzBtn.disabled = true; buzzBtn.innerText = "LISTEN"; buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
                 }
+            } else if (data.status === 'buffering') {
+                statusEl.innerText = "Get Ready..."; 
+                statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
+                buzzBtn.disabled = true; buzzBtn.innerText = "WAIT"; 
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50";
             } else if (data.status === 'complete') {
                 statusEl.innerText = "Round Over"; buzzBtn.innerText = "DONE"; buzzBtn.disabled = true;
             } else {
