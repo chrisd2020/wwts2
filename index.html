@@ -410,15 +410,15 @@
                 <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${isBuzzed ? 'winner-card' : ''}">
                     <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center transition shadow z-20" title="Remove Player">×</button>
                     <div class="flex justify-between w-full text-xs text-gray-400 px-1">
-                        <span>${p.name}</span>
-                        ${isBuzzed ? `<span class="text-yellow-500 font-bold">#${i+1}</span>` : ''}
+                        <span class="truncate pr-1">${p.name} (Pts: ${p.score || 0})</span>
+                        ${isBuzzed ? `<span class="text-yellow-500 font-bold shrink-0">#${i+1}</span>` : ''}
                     </div>
                     <div class="w-full py-4 rounded-lg font-black text-xl flex items-center justify-center
                         ${isBuzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
                         ${isBuzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
                     </div>
                     ${(isBuzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal')) ? 
-                        `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Select Winner</button>` 
+                        `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Award Win (+1)</button>` 
                         : ''}
                 </div>
             `}).join('');
@@ -577,8 +577,24 @@
         };
 
         window.awardWin = async (pid) => {
-             alert("Winner selected!");
-             window.hostResetRound();
+             const appId = window.__app_id || 'wwts-game'; 
+             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             
+             try {
+                await runTransaction(db, async (t) => {
+                    const snap = await t.get(roomRef);
+                    if (!snap.exists()) return;
+                    const players = snap.data().players || [];
+                    const updated = players.map(p => {
+                        if (p.id === pid) {
+                            return { ...p, score: (p.score || 0) + 1 };
+                        }
+                        return p;
+                    });
+                    t.update(roomRef, { players: updated });
+                });
+                window.hostResetRound();
+             } catch(e) { console.error("Award win error", e); }
         };
 
         window.removePlayer = async (pid) => {
@@ -682,6 +698,20 @@
             const statusEl = document.getElementById('player-status');
             const buzzBtn = document.getElementById('player-buzz-btn');
             const buzzContainer = document.getElementById('buzz-container');
+            const scoreboard = document.getElementById('player-scoreboard');
+
+            // --- SCOREBOARD ---
+            if (scoreboard) {
+                const sorted = [...data.players].sort((a,b) => (b.score || 0) - (a.score || 0));
+                scoreboard.innerHTML = sorted.map(p => `
+                    <div class="flex justify-between items-center py-2 border-b border-white/5 last:border-0">
+                        <span class="text-sm truncate mr-2 ${p.id === user.uid ? 'text-yellow-400 font-bold' : 'text-gray-300'}">
+                            ${p.id === user.uid ? '⭐ ' : ''}${p.name}
+                        </span>
+                        <span class="font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded text-xs">${p.score || 0}</span>
+                    </div>
+                `).join('');
+            }
 
             if (data.status === 'playing') {
                 if (data.hasCut) {
@@ -694,11 +724,11 @@
                     if (myData && myData.buzzedAt) {
                         buzzBtn.innerText = "BUZZED!";
                         buzzBtn.disabled = true;
-                        buzzBtn.className = "w-64 h-64 rounded-full bg-green-500 text-black font-black text-3xl shadow-[0_0_30px_lime]";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-green-500 text-black font-black text-2xl shadow-[0_0_30px_lime]";
                     } else {
                         buzzBtn.innerText = "BUZZ!";
                         buzzBtn.disabled = false;
-                        buzzBtn.className = "w-64 h-64 rounded-full bg-red-600 text-white font-black text-4xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 text-white font-black text-3xl shadow-[0_0_30px_red] active:scale-95 transition-transform";
                         if(navigator.vibrate) navigator.vibrate(200);
                     }
                 } else {
@@ -707,7 +737,7 @@
                     statusEl.className = "text-2xl font-black text-yellow-400 animate-pulse";
                     buzzBtn.disabled = true;
                     buzzBtn.innerText = "LISTEN";
-                    buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+                    buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
                     buzzContainer.classList.remove('buzz-anim');
                 }
             } else if (data.status === 'complete') {
@@ -716,13 +746,13 @@
                 statusEl.className = "text-xl text-yellow-400 font-bold";
                 buzzBtn.disabled = true;
                 buzzBtn.innerText = "DONE";
-                buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-none opacity-80";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-none opacity-80";
             } else {
                 statusEl.innerText = "Waiting for Host...";
                 statusEl.className = "text-xl text-gray-400";
                 buzzBtn.disabled = true;
                 buzzBtn.innerText = "WAIT";
-                buzzBtn.className = "w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden opacity-50 grayscale";
             }
         }
 
@@ -1033,11 +1063,19 @@
             <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
                 <div class="w-96 h-96 rounded-full border border-white/10 animate-ping absolute"></div>
             </div>
-            <div id="player-status" class="text-xl text-gray-400 mb-8 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
-            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-64 h-64 rounded-full bg-gray-800 text-gray-500 font-black text-4xl shadow-2xl transition-all z-20 relative overflow-hidden">
+            <div id="player-status" class="text-xl text-gray-400 mb-6 font-bold tracking-wide z-10 text-center">Waiting for Host...</div>
+            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">
                 WAIT
             </button>
         </main>
+
+        <!-- PLAYER SCOREBOARD -->
+        <section class="bg-black/40 backdrop-blur-lg p-4 border-t border-white/10 max-h-48 flex flex-col">
+            <h3 class="text-[10px] uppercase font-black tracking-widest text-gray-500 mb-2">Live Scoreboard</h3>
+            <div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1">
+                <!-- Scores injected here -->
+            </div>
+        </section>
     </div>
 
     <!-- HOST SCREEN (Main Game) -->
@@ -1047,7 +1085,7 @@
         <div class="flex flex-col gap-4 h-full overflow-hidden">
             <!-- Header -->
             <div class="glass p-4 rounded-xl">
-                <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS2 <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
+                <h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block">Host Control</span></h1>
                 <div class="flex justify-between items-end mt-2">
                     <div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400">
                         <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline
