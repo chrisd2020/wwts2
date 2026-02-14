@@ -310,19 +310,21 @@
                 if (!localState.timerInterval) startLoop();
                 timelineContainer.classList.remove('interactive');
                 
+                // Reset Reveal Button to default state (Disabled)
+                revealBtn.disabled = true; 
+                revealBtn.innerText = "🔊 Reveal Music";
+                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
+
                 if (data.hasCut) {
                     roundStatus.innerText = "Music Cut";
                     startBtn.innerText = "Force End Round"; 
                     startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                     startBtn.onclick = () => window.hostEndRound();
-                    revealBtn.disabled = true; 
-                    revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
                 } else {
                     roundStatus.innerText = "Playing";
                     startBtn.innerText = "Force Cut";
                     startBtn.classList.replace('bg-blue-600', 'bg-red-600');
                     startBtn.onclick = () => window.hostTriggerCut();
-                    revealBtn.disabled = true;
                 }
 
             } else if (data.status === 'complete') {
@@ -368,7 +370,11 @@
                 startBtn.className = "bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1";
                 startBtn.onclick = () => window.hostStartRound();
                 
+                // Reset Reveal Button to default state (Disabled)
                 revealBtn.disabled = true;
+                revealBtn.innerText = "🔊 Reveal Music";
+                revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl";
+                
                 timelineContainer.classList.remove('interactive');
                 
                 document.getElementById('gameTimer').innerText = "0.00";
