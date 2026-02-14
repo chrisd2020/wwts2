@@ -127,8 +127,10 @@
             const config = getFirebaseConfig();
             
             if (!config || !config.apiKey) {
-                document.getElementById('lobby-loading').classList.add('hidden');
-                document.getElementById('lobby-setup').classList.remove('hidden');
+                const loading = document.getElementById('lobby-loading');
+                const setup = document.getElementById('lobby-setup');
+                if(loading) loading.classList.add('hidden');
+                if(setup) setup.classList.remove('hidden');
                 return;
             }
 
@@ -200,8 +202,10 @@
                 });
             } catch(e) { 
                 console.error("Firebase Init Error", e); 
-                document.getElementById('lobby-loading').classList.add('hidden');
-                document.getElementById('lobby-setup').classList.remove('hidden');
+                const loading = document.getElementById('lobby-loading');
+                const setup = document.getElementById('lobby-setup');
+                if(loading) loading.classList.add('hidden');
+                if(setup) setup.classList.remove('hidden');
             }
         }
 
@@ -256,9 +260,12 @@
                 });
 
                 localStorage.setItem('wwts_active_room_id', roomId);
-                document.getElementById('lobby-screen').classList.add('hidden');
-                document.getElementById('host-screen').classList.remove('hidden');
-                document.getElementById('roomCodeDisplay').innerText = roomId;
+                const lobby = document.getElementById('lobby-screen');
+                const host = document.getElementById('host-screen');
+                const codeDisplay = document.getElementById('roomCodeDisplay');
+                if(lobby) lobby.classList.add('hidden');
+                if(host) host.classList.remove('hidden');
+                if(codeDisplay) codeDisplay.innerText = roomId;
                 subscribeToRoom(roomId, 'host');
 
             } catch(e) { console.error("Create Room Error:", e); }
@@ -266,15 +273,16 @@
 
         window.joinRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
-            const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
-            const name = document.getElementById('playerNameInput').value.trim();
+            const codeInput = document.getElementById('joinCodeInput');
+            const nameInput = document.getElementById('playerNameInput');
+            const code = codeInput ? codeInput.value.toUpperCase().trim() : "";
+            const name = nameInput ? nameInput.value.trim() : "";
             
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
 
             const btn = document.getElementById('joinBtn');
-            btn.innerText = "Joining...";
-            btn.disabled = true;
+            if(btn) { btn.innerText = "Joining..."; btn.disabled = true; }
 
             try {
                 const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${code}`);
@@ -282,8 +290,7 @@
 
                 if(!snap.exists()) {
                     alert("Room not found!");
-                    btn.innerText = "Join Game";
-                    btn.disabled = false;
+                    if(btn) { btn.innerText = "Join Game"; btn.disabled = false; }
                     return;
                 }
 
@@ -303,16 +310,19 @@
 
                 roomId = code;
                 localStorage.setItem('wwts_active_room_id', roomId);
-                document.getElementById('lobby-screen').classList.add('hidden');
-                document.getElementById('player-screen').classList.remove('hidden');
-                document.getElementById('player-room-code').innerText = roomId;
-                document.getElementById('player-name-display').innerText = name;
+                const lobby = document.getElementById('lobby-screen');
+                const player = document.getElementById('player-screen');
+                const pCode = document.getElementById('player-room-code');
+                const pName = document.getElementById('player-name-display');
+                if(lobby) lobby.classList.add('hidden');
+                if(player) player.classList.remove('hidden');
+                if(pCode) pCode.innerText = roomId;
+                if(pName) pName.innerText = name;
 
                 subscribeToRoom(code, 'player');
             } catch(e) { 
                 console.error("Join Error:", e); 
-                btn.innerText = "Join Game";
-                btn.disabled = false;
+                if(btn) { btn.innerText = "Join Game"; btn.disabled = false; }
             }
         };
 
@@ -420,7 +430,6 @@
         // --- HOST LOGIC ---
         
         function updateHostUI(data) {
-            // Guard against snapshots firing while UI components are unmounted or still loading
             const cutDisplay = document.getElementById('cutTimeDisplay');
             const cutSlider = document.getElementById('cutTimeSlider');
             const cutMarker = document.getElementById('cut-marker');
@@ -430,7 +439,6 @@
             const timelineContainer = document.getElementById('timeline-container');
             const hostScoreboard = document.getElementById('host-scoreboard');
 
-            // Render players (this function has its own internal guards)
             renderHostPlayers(data);
             
             if (cutDisplay && cutSlider && document.activeElement !== cutSlider) {
@@ -466,7 +474,6 @@
                 if(albArt) albArt.innerHTML = `<img src="${data.queuedPlaylist.img}" class="w-full h-full object-cover">`;
             }
             
-            // Only proceed with specific button updates if elements exist
             if (!startBtn || !revealBtn || !roundStatus) return;
 
             if (data.status === 'playing') {
@@ -576,7 +583,6 @@
             `}).join('');
         }
 
-        // --- THE GAME LOOP ---
         function startLoop() {
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             function loop() {
@@ -649,8 +655,6 @@
             }, 50);
         }
 
-        // --- HOST ACTIONS ---
-        
         window.selectPlaylist = async (uri, name, img) => {
              if(!deviceId) return alert("Player not ready.");
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
@@ -664,46 +668,61 @@
         };
 
         window.hostStartRound = async () => {
+            if (!roomId) return;
+            const startBtn = document.getElementById('startRoundBtn');
+            if (startBtn) startBtn.innerText = "Starting...";
+            
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const slider = document.getElementById('cutTimeSlider');
             const cutTime = slider ? parseInt(slider.value) : 10;
-            const snap = await getDoc(roomRef);
-            if (!snap.exists()) return;
-            const data = snap.data();
-            const cleanPlayers = data.players.map(p => ({...p, buzzedAt: null}));
+            
+            try {
+                const snap = await getDoc(roomRef);
+                if (!snap.exists()) return;
+                const data = snap.data();
+                const cleanPlayers = (data.players || []).map(p => ({...p, buzzedAt: null}));
 
-            localState.localAudioAnchor = null;
-            localState.localHasPaused = false;
+                localState.localAudioAnchor = null;
+                localState.localHasPaused = false;
 
-            // Prioritize Spotify Start
-            if(playerInstance) {
-                await playerInstance.activateElement();
-                await playerInstance.setVolume(0.8);
-                if (data.queuedPlaylist) {
+                // 1. Update DB immediately so players see "LISTEN..."
+                await updateDoc(roomRef, {
+                    status: 'playing',
+                    hasCut: false,
+                    startTime: Date.now(),
+                    pauseTime: 0,
+                    autoCutTime: cutTime,
+                    players: cleanPlayers,
+                    lastWinnerId: null
+                });
+
+                // 2. Handle Spotify Playback in background
+                if(playerInstance) {
+                    await playerInstance.activateElement();
+                    await playerInstance.setVolume(0.8);
+                    
                     const tokenToUse = await getValidToken();
-                    await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
-                    });
-                    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                        method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
-                    });
-                } else {
-                    await playerInstance.seek(0);
-                    await playerInstance.resume();
+                    if (data.queuedPlaylist) {
+                        // Fresh playlist
+                        await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=true&device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}` }
+                        });
+                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
+                        });
+                        // Clear the queue info in DB after starting
+                        await updateDoc(roomRef, { queuedPlaylist: null });
+                    } else {
+                        // Resetting same song
+                        await playerInstance.seek(0);
+                        await playerInstance.resume();
+                    }
                 }
+            } catch (e) {
+                console.error("Start Round Error:", e);
+                if (startBtn) startBtn.innerText = "Error - Retry";
             }
-
-            await updateDoc(roomRef, {
-                status: 'playing',
-                hasCut: false,
-                startTime: Date.now(),
-                pauseTime: 0,
-                autoCutTime: cutTime,
-                players: cleanPlayers,
-                queuedPlaylist: null,
-                lastWinnerId: null
-            });
         };
 
         window.hostTriggerCut = async () => {
@@ -808,7 +827,6 @@
             handleLogout();
         };
 
-        // --- SCRUBBING LOGIC ---
         const timeline = document.getElementById('timeline-container');
         function getScrubTime(e) {
             if (!timeline) return 0;
@@ -876,7 +894,6 @@
             });
         }
 
-        // --- PLAYER UI ---
         function updatePlayerUI(data) {
             const buzzBtn = document.getElementById('player-buzz-btn');
             const statusEl = document.getElementById('player-status');
@@ -895,7 +912,6 @@
                 if(winOverlay) winOverlay.classList.add('hidden');
             }
 
-            // Only proceed if core player elements are found
             if (!statusEl || !buzzBtn) return;
 
             if (data.status === 'playing') {
@@ -979,7 +995,6 @@
             } catch(e) { console.error("Buzz failed", e); if(btn) btn.innerText = "RETRY"; }
         };
 
-        // --- SPOTIFY AUTH & PLAYER ---
         const CLIENT_ID_KEY = 'wwts_client_id';
         let deviceId = null;
         let token = localStorage.getItem('wwts_host_token');
