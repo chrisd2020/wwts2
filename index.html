@@ -123,7 +123,8 @@
             isTestMode: false,
             localAudioAnchor: null, 
             isSpotifyPlaying: false,
-            localHasPaused: false 
+            localHasPaused: false,
+            isPendingNext: false // New: Handles skip-track race condition
         };
 
         function getFirebaseConfig() {
@@ -914,9 +915,33 @@
                 const track = state.track_window.current_track;
                 if (!state.paused) { localState.localAudioAnchor = getServerTime() - state.position; localState.isSpotifyPlaying = true; } 
                 else { localState.isSpotifyPlaying = false; }
+                
                 const h = document.getElementById('host-screen');
                 if (roomId && h && !h.classList.contains('hidden')) {
                     const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                    
+                    // --- NEW: Next Track Handling ---
+                    if (localState.isPendingNext && track.uri) {
+                        localState.isPendingNext = false;
+                        gameLog("New song confirmed: " + track.name, "success");
+                        const slider = document.getElementById('cutTimeSlider'); 
+                        const cutTime = slider ? parseInt(slider.value) : 10;
+                        const snap = await getDoc(roomRef); 
+                        const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+                        
+                        await updateDoc(roomRef, { 
+                            status: 'playing', 
+                            currentTrackUri: track.uri,
+                            hasCut: false, 
+                            startTime: serverTimestamp(), 
+                            pauseTime: 0, 
+                            autoCutTime: cutTime, 
+                            players: cleanPlayers, 
+                            lastWinnerId: null 
+                        });
+                        return;
+                    }
+
                     if (localState.status !== 'lobby') {
                         const t = document.getElementById('track-name');
                         if(t) t.innerText = track.name;
@@ -925,7 +950,9 @@
                         const art = document.getElementById('album-art');
                         if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
                     }
-                    if (localState.currentTrackUri !== track.uri) await updateDoc(roomRef, { currentTrackUri: track.uri });
+                    if (localState.currentTrackUri !== track.uri && !localState.isPendingNext) {
+                         await updateDoc(roomRef, { currentTrackUri: track.uri });
+                    }
                 }
             });
             playerInstance.connect();
@@ -974,31 +1001,23 @@
         }
 
         document.getElementById('nextRoundBtn').onclick = async () => {
-             gameLog("⏭ Next Song");
+             gameLog("⏭ Skipping Track...");
+             localState.isPendingNext = true;
+             localState.localAudioAnchor = null; 
+             localState.localHasPaused = false;
+
              if(playerInstance) { 
                  await playerInstance.activateElement(); 
                  await playerInstance.setVolume(0.8); 
                  await playerInstance.nextTrack(); 
+                 await playerInstance.resume(); // Fix: Force host playback
              }
+             
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const slider = document.getElementById('cutTimeSlider'); 
-             const cutTime = slider ? parseInt(slider.value) : 10;
-             const snap = await getDoc(roomRef); 
-             const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
              
-             localState.localAudioAnchor = null; 
-             localState.localHasPaused = false;
-             
-             // Reset URI in DB so clients don't re-play the previous song while skipping
+             // Reset state and clear URI in DB to prevent clients from playing old track
              await updateDoc(roomRef, { 
-                 status: 'playing', 
-                 hasCut: false, 
-                 startTime: serverTimestamp(), 
-                 pauseTime: 0, 
-                 autoCutTime: cutTime, 
-                 players: cleanPlayers, 
-                 queuedPlaylist: null, 
-                 lastWinnerId: null,
+                 status: 'lobby', // Set to lobby while we wait for the skip to finish
                  currentTrackUri: null 
              });
         };
