@@ -669,6 +669,7 @@
         }
         
         function updatePlayerUI(data) {
+            if (!user) return;
             const statusEl = document.getElementById('player-status');
             const buzzBtn = document.getElementById('player-buzz-btn');
             const timerEl = document.getElementById('player-game-timer');
@@ -979,3 +980,407 @@
                 });
             } catch(e) { console.error("Buzz failed", e); if(btn) btn.innerText = "RETRY"; }
         };
+
+        window.toggleSyncTest = async (el) => {
+             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+             await updateDoc(roomRef, { isTestMode: el.checked });
+        };
+
+        window.selectPlaylist = async (uri, name, img) => {
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            await updateDoc(roomRef, { queuedPlaylist: { uri, name, img } });
+            gameLog("Playlist queued: " + name, "success");
+        };
+
+        const CLIENT_ID_KEY = 'wwts_client_id';
+        let deviceId = null;
+        let token = localStorage.getItem('wwts_host_token');
+        let playerInstance = null;
+
+        function generateRandomString(l) { let t = ''; const p = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'; for (let i = 0; i < l; i++) t += p.charAt(Math.floor(Math.random() * p.length)); return t; }
+        async function generateCodeChallenge(v) { const d = new TextEncoder().encode(v); const digest = await window.crypto.subtle.digest('SHA-256', d); return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+
+        window.addEventListener('load', async () => {
+             const params = new URLSearchParams(window.location.search);
+             const code = params.get('code');
+             if (code) await exchangeToken(code); 
+             if(token) updateAuthUI();
+             const storedId = localStorage.getItem(CLIENT_ID_KEY);
+             if(storedId) document.querySelectorAll('.client-id-input').forEach(i => i.value = storedId);
+             
+             const searchInput = document.getElementById('search-input');
+             if (searchInput) {
+                 searchInput.addEventListener('keydown', (e) => {
+                     if (e.key === 'Enter') document.getElementById('search-btn').click();
+                 });
+             }
+        });
+
+        const timelineContainer = document.getElementById('timeline-container');
+        const handleTimelineInteraction = (e) => {
+            if (!localState.status.includes('reveal') && localState.status !== 'complete') return;
+            const rect = timelineContainer.getBoundingClientRect();
+            const x = e.clientX || (e.touches ? e.touches[0].clientX : 0);
+            const offsetX = Math.max(0, Math.min(x - rect.left, rect.width));
+            const seekTime = (offsetX / rect.width) * 60;
+            localState.pauseTime = seekTime;
+            const timer = document.getElementById('gameTimer');
+            if(timer) timer.innerText = seekTime.toFixed(2);
+            const prog = document.getElementById('timeline-progress');
+            if(prog) prog.style.width = (offsetX/rect.width*100) + '%';
+            
+            // Force highlight update during scrub
+            highlightClosest(seekTime);
+        };
+
+        timelineContainer.onmousedown = (e) => {
+            if (!localState.status.includes('reveal') && localState.status !== 'complete') return;
+            localState.isDragging = true; handleTimelineInteraction(e);
+        };
+        window.onmousemove = (e) => { if (localState.isDragging) handleTimelineInteraction(e); };
+        window.onmouseup = async (e) => {
+            if (localState.isDragging) {
+                localState.isDragging = false;
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                if (localState.status === 'revealing') {
+                    const newStart = getServerTime() - (localState.pauseTime * 1000);
+                    await updateDoc(roomRef, { startTime: new Date(newStart), pauseTime: localState.pauseTime });
+                    if (playerInstance) playerInstance.seek(localState.pauseTime * 1000);
+                } else {
+                    await updateDoc(roomRef, { pauseTime: localState.pauseTime });
+                }
+            }
+        };
+
+        async function getValidToken() {
+            const expiry = parseInt(localStorage.getItem('wwts_token_expiry') || '0');
+            const refreshToken = localStorage.getItem('wwts_refresh_token');
+            const clientId = localStorage.getItem(CLIENT_ID_KEY);
+            if (Date.now() > (expiry - 120000) && refreshToken && clientId) {
+                try {
+                    const res = await fetch('https://accounts.spotify.com/api/token', {
+                        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId })
+                    });
+                    const data = await res.json();
+                    if (data.access_token) {
+                        localStorage.setItem('wwts_host_token', data.access_token);
+                        localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
+                        if (data.refresh_token) localStorage.setItem('wwts_refresh_token', data.refresh_token);
+                        token = data.access_token; return token;
+                    }
+                } catch(e) { console.error("Refresh Error:", e); }
+            }
+            return token;
+        }
+
+        function updateAuthUI() {
+             const h = document.getElementById('status-indicator');
+             if(h) { 
+                 h.innerHTML = `<div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_lime]"></span> Connected <button onclick="logout()" class="ml-2 text-[9px] text-gray-500 hover:text-white underline decoration-dotted">Logout Spotify</button></div>`; 
+                 h.className = 'mt-2 flex items-center gap-2 text-xs font-mono text-green-400'; 
+             }
+             const panel = document.getElementById('auth-panel'); if(panel) panel.classList.add('hidden');
+             const p = document.getElementById('player-spotify-status');
+             if(p) { 
+                 p.innerHTML = `<span class="w-2 h-2 rounded-full bg-green-500"></span> Spotify Linked <button onclick="logout()" class="ml-2 px-2 py-0.5 rounded bg-black/40 text-[8px] hover:bg-black/60 transition">Logout</button>`; 
+                 p.className = 'flex items-center gap-2 text-[10px] text-green-400 font-bold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20'; 
+             }
+             const pAuth = document.getElementById('player-spotify-auth'); if(pAuth) pAuth.classList.add('hidden');
+        }
+
+        window.startLogin = async (isPlayer = false) => {
+            const id = isPlayer ? 'playerClientIdInput' : 'clientIdInput';
+            const clientId = document.getElementById(id).value.trim();
+            if(!clientId) return alert("Enter Client ID");
+            localStorage.setItem(CLIENT_ID_KEY, clientId);
+            const verifier = generateRandomString(128); const challenge = await generateCodeChallenge(verifier);
+            localStorage.setItem("wwts_verifier", verifier);
+            const redirectUri = window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/');
+            localStorage.setItem("wwts_redirect_uri", redirectUri);
+            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            const args = new URLSearchParams({ response_type: 'code', client_id: clientId, scope: scopes, redirect_uri: redirectUri, code_challenge_method: 'S256', code_challenge: challenge });
+            window.location.href = 'https://accounts.spotify.com/authorize?' + args;
+        };
+
+        async function exchangeToken(code) {
+            const verifier = localStorage.getItem("wwts_verifier"); const clientId = localStorage.getItem(CLIENT_ID_KEY);
+            let redirectUri = localStorage.getItem("wwts_redirect_uri") || (window.location.origin + window.location.pathname.replace(/\/index\.html$/, '/'));
+            const params = new URLSearchParams({ client_id: clientId, grant_type: 'authorization_code', code: code, redirect_uri: redirectUri, code_verifier: verifier });
+            try {
+                const res = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
+                const data = await res.json();
+                if (data.access_token) { 
+                    localStorage.setItem('wwts_host_token', data.access_token); localStorage.setItem('wwts_refresh_token', data.refresh_token);
+                    localStorage.setItem('wwts_token_expiry', Date.now() + (data.expires_in * 1000));
+                    token = data.access_token; window.location.href = redirectUri; 
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        window.logout = () => { localStorage.removeItem('wwts_host_token'); localStorage.removeItem('wwts_refresh_token'); localStorage.removeItem('wwts_token_expiry'); window.location.reload(); };
+
+        let playerInit = false;
+        window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
+
+        function initSpotifyPlayer() {
+            if(playerInit) return; playerInit = true;
+            playerInstance = new Spotify.Player({ name: "WWTS Audio Sync", getOAuthToken: async cb => { const t = await getValidToken(); cb(t); }, volume: 0.8 });
+            playerInstance.addListener('ready', async ({ device_id }) => { 
+                deviceId = device_id; gameLog("Spotify Ready", "success"); updateAuthUI(); 
+                try {
+                    const tokenToUse = await getValidToken();
+                    await fetch('https://api.spotify.com/v1/me/player', { method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ device_ids: [device_id], play: false }) });
+                } catch(e) { console.error("Transfer error:", e); }
+                const h = document.getElementById('host-screen');
+                if (h && h.classList.contains('hidden')) { const p = document.getElementById('player-audio-primer'); if(p) p.classList.remove('hidden'); }
+            });
+
+            playerInstance.addListener('player_state_changed', async state => {
+                if (!state) return;
+                const track = state.track_window.current_track;
+                
+                if (localState.pendingRoundStart && !state.paused && !state.loading && roomId) {
+                    localState.pendingRoundStart = false; 
+                    gameLog("Audio Started - Syncing Clients...", "success");
+                    
+                    const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                    
+                    try {
+                        const snap = await getDoc(roomRef);
+                        const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+                        
+                        const actualStart = getServerTime() - state.position;
+                        
+                        await updateDoc(roomRef, { 
+                            status: 'playing', 
+                            startTime: new Date(actualStart), 
+                            hasCut: false, 
+                            players: cleanPlayers, 
+                            autoCutTime: localState.pendingRoundConfig ? localState.pendingRoundConfig.autoCutTime : 10,
+                            lastWinnerId: null,
+                            pauseTime: 0
+                        });
+                    } catch(e) {
+                         console.error("Error finalizing start:", e);
+                         localState.pendingRoundStart = false; 
+                    }
+                }
+
+                if (!state.paused) { localState.localAudioAnchor = getServerTime() - state.position; localState.isSpotifyPlaying = true; } 
+                else { localState.isSpotifyPlaying = false; }
+                
+                const h = document.getElementById('host-screen');
+                if (roomId && h && !h.classList.contains('hidden')) {
+                    const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                    
+                    if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
+                         localState.isPendingNext = false;
+                         localState.skippedTrackUri = null;
+                         localState.currentTrackUri = track.uri;
+                         
+                         const t = document.getElementById('track-name');
+                         if(t) t.innerText = track.name;
+                         const a = document.getElementById('artist-name');
+                         if(a) a.innerText = track.artists[0].name;
+                         const art = document.getElementById('album-art');
+                         if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+
+                         // Perform Full Round Reset
+                         try {
+                             const snap = await getDoc(roomRef);
+                             const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+                             const actualStart = getServerTime() - state.position;
+                             
+                             await updateDoc(roomRef, { 
+                                 currentTrackUri: track.uri,
+                                 status: 'playing',
+                                 startTime: new Date(actualStart),
+                                 hasCut: false,
+                                 pauseTime: 0,
+                                 players: cleanPlayers,
+                                 lastWinnerId: null
+                             });
+                             gameLog("Round Started: " + track.name, "success");
+                         } catch(e) { console.error("Reset error", e); }
+                         return;
+                    }
+
+                    if (localState.status !== 'lobby' && !localState.isPendingNext && localState.status !== 'buffering') {
+                        const t = document.getElementById('track-name');
+                        if(t) t.innerText = track.name;
+                        const a = document.getElementById('artist-name');
+                        if(a) a.innerText = track.artists[0].name;
+                        const art = document.getElementById('album-art');
+                        if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+                    }
+                    if (localState.currentTrackUri !== track.uri && !localState.isPendingNext) {
+                         await updateDoc(roomRef, { currentTrackUri: track.uri });
+                    }
+                }
+            });
+            playerInstance.connect();
+        }
+        
+        async function handleSearch() {
+            const btn = document.getElementById('search-btn');
+            const input = document.getElementById('search-input');
+            const results = document.getElementById('results');
+            
+            if (!btn || !input || !results) return;
+            
+            const query = input.value.trim();
+            if (!query) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<div class="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full"></div>';
+
+            try {
+                const tokenToUse = await getValidToken();
+                if (!tokenToUse) {
+                    gameLog("Host not logged in to Spotify", "error");
+                    alert("Host must log in to Spotify first.");
+                    return;
+                }
+
+                const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist`, { 
+                    headers: { 'Authorization': `Bearer ${tokenToUse}` } 
+                });
+                
+                if (!res.ok) throw new Error(res.statusText);
+
+                const data = await res.json();
+                if (data.playlists?.items) {
+                    results.innerHTML = data.playlists.items.filter(p => p !== null).map(p => {
+                        const safeName = p.name.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+                        const safeImg = p.images?.[0]?.url || '';
+                        return `
+                        <div onclick="selectPlaylist('${p.uri}', '${safeName}', '${safeImg}')" class="flex items-center gap-3 p-2 rounded hover:bg-white/10 cursor-pointer group transition-colors">
+                            <img src="${safeImg}" class="w-10 h-10 rounded shadow object-cover bg-black/50">
+                            <div class="min-w-0 text-left">
+                                <div class="text-xs font-bold truncate text-white group-hover:text-green-400">${p.name}</div>
+                                <div class="text-[10px] text-gray-400">${p.tracks?.total || 0} tracks</div>
+                            </div>
+                        </div>`;
+                    }).join('');
+                } else {
+                    results.innerHTML = '<div class="text-xs text-gray-500 text-center p-2">No results found</div>';
+                }
+            } catch (e) {
+                gameLog("Search Error: " + e.message, "error");
+                results.innerHTML = `<div class="text-[10px] text-red-400 text-center p-2">Error: ${e.message}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "🔍";
+            }
+        }
+
+        const searchBtn = document.getElementById('search-btn');
+        if(searchBtn) searchBtn.onclick = handleSearch;
+
+        // Dynamically inject Spotify SDK to fix race condition
+        const spotifyScript = document.createElement('script');
+        spotifyScript.src = "https://sdk.scdn.co/spotify-player.js";
+        spotifyScript.async = true;
+        document.body.appendChild(spotifyScript);
+    </script>
+</head>
+<body class="p-4 h-screen overflow-hidden flex flex-col">
+
+    <!-- LOBBY SCREEN -->
+    <div id="lobby-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0514]">
+        <h1 class="text-5xl md:text-6xl font-black italic tracking-tighter text-yellow-400 mb-2 text-center uppercase">Win When They're Singing</h1>
+        <p class="text-gray-400 mb-8 font-bold tracking-widest uppercase text-xs">Multiplayer Edition</p>
+        
+        <div id="lobby-loading" class="text-center">
+            <div class="animate-spin w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <p class="text-gray-400 uppercase text-xs font-black">Connecting...</p>
+        </div>
+
+        <div id="lobby-setup" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5 text-center">
+            <h2 class="text-xl font-bold text-white uppercase">Configuration Required</h2>
+            <p class="text-sm text-gray-400 mb-4">Firebase configuration is missing. Paste your JSON config below to enable online play.</p>
+            
+            <textarea id="manualConfigInput" placeholder='{"apiKey": "...", "projectId": "...", ...}' class="w-full h-32 bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono text-gray-300 focus:border-yellow-400 outline-none mb-4 custom-scroll"></textarea>
+            
+            <div class="flex flex-col gap-3">
+                <button onclick="saveManualConfig()" class="block w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-4 rounded-full transition uppercase text-sm">Initialize Firebase</button>
+                <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
+                <button onclick="showMainLobby()" class="block w-full bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-full transition uppercase text-xs border border-white/10">Try Demo Mode</button>
+            </div>
+        </div>
+
+        <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
+            <div class="space-y-3">
+                <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
+                <div class="flex gap-2">
+                    <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
+                    <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">Join Game</button>
+                </div>
+            </div>
+            <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-[#0a0514] px-2 text-[10px] text-gray-500 font-black uppercase">OR</span></div></div>
+            <button id="createRoomBtn" onclick="createRoom()" class="block w-full bg-[#1DB954] hover:bg-green-400 text-black font-black text-xl py-4 rounded-full transition transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.4)]">Host New Game</button>
+            <button onclick="clearFirebaseConfig()" class="block w-full text-[10px] text-gray-600 hover:text-gray-400 underline uppercase mt-4 text-center">Change Firebase Config</button>
+        </div>
+    </div>
+
+    <!-- PLAYER SCREEN -->
+    <div id="player-screen" class="hidden fixed inset-0 z-40 bg-[#0a0514] flex flex-col">
+        <div id="player-audio-primer" class="hidden fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md">
+            <div class="text-4xl mb-4">🔊</div>
+            <h2 class="text-2xl font-bold text-white mb-2 uppercase">Spotify Linked!</h2>
+            <p class="text-sm text-gray-400 mb-6">Browsers require a tap to enable synchronized audio.</p>
+            <button onclick="primeAudio()" class="bg-green-500 hover:bg-green-400 text-black font-black px-8 py-4 rounded-full uppercase shadow-[0_0_20px_rgba(34,197,94,0.4)]">Enable Audio Sync</button>
+        </div>
+        <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
+        <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
+            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
+                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+                </div>
+                <button onclick="leaveRoom()" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">
+                    Leave
+                </button>
+            </div>
+        </header>
+        <div id="player-spotify-auth" class="bg-green-500/10 p-3 border-b border-green-500/20 flex items-center justify-between">
+            <input id="playerClientIdInput" class="client-id-input w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] mr-2" placeholder="Paste Client ID">
+            <button onclick="startLogin(true)" class="bg-[#1DB954] text-black font-black text-[10px] px-4 py-2 rounded-full uppercase">Link</button>
+        </div>
+        <main class="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden" id="buzz-container">
+            <div id="win-overlay" class="hidden absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-float">
+                <div class="text-8xl mb-4">🏆</div><h2 class="text-5xl font-black text-yellow-400 mb-2 italic tracking-tighter uppercase">You Won!</h2><p class="text-xl text-white font-bold">The host awarded you a point!</p>
+            </div>
+            <div id="player-status" class="text-xl text-gray-400 mb-2 font-bold tracking-wide z-10 text-center uppercase">Waiting...</div>
+            <div class="mb-8 flex flex-col items-center z-10"><div id="player-game-timer" class="text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">0.00</div><div class="text-[10px] uppercase tracking-widest text-gray-500 font-black mt-2">Audio Position</div></div>
+            <button id="player-buzz-btn" onclick="playerBuzz()" disabled class="w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden">WAIT</button>
+        </main>
+        <section class="bg-black/40 backdrop-blur-lg p-4 border-t border-white/10 max-h-48 flex flex-col"><h3 class="text-[10px] uppercase font-black tracking-widest text-gray-500 mb-2">Live Scoreboard</h3><div id="player-scoreboard" class="overflow-y-auto custom-scroll flex-1 pr-1"></div></section>
+    </div>
+
+    <!-- HOST SCREEN -->
+    <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 max-w-7xl mx-auto w-full h-full">
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            <div class="glass p-4 rounded-xl shrink-0"><h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block uppercase">Host</span></h1><div class="flex justify-between items-end mt-2"><div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400"><span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline</div><div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span></div></div></div>
+            <div class="glass p-3 rounded-xl space-y-3 shrink-0"><div id="auth-panel"><button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded uppercase">Spotify Login</button><input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-yellow-500">Sync Test</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div><div class="space-y-1"><div class="flex justify-between text-[10px] text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div><input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"></div></div>
+            <div id="debug-log-container" class="glass p-2 rounded-xl flex flex-col h-32 shrink-0"><h3 class="text-[9px] font-black uppercase text-gray-500 border-b border-white/5 pb-1 mb-1">Live Log</h3><div id="debug-log-content" class="overflow-y-auto custom-scroll flex-1 pr-1 text-[9px] font-mono leading-tight"></div></div>
+            <div class="glass p-3 rounded-xl flex-1 flex flex-col min-h-0 overflow-hidden"><div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-2 rounded text-xs">🔍</button></div><div id="results" class="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scroll"></div></div>
+        </div>
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            <div class="glass p-4 rounded-xl border-t-4 border-yellow-500 shrink-0">
+                <div class="flex gap-4 items-center"><div id="album-art" class="w-20 h-20 bg-black/40 rounded-lg flex items-center justify-center shrink-0 overflow-hidden text-2xl">🎵</div><div class="flex-1 min-w-0"><div id="round-status" class="text-[10px] uppercase font-black text-yellow-500 mb-1 tracking-widest">Lobby</div><h2 id="track-name" class="text-2xl font-black leading-tight truncate uppercase">Waiting...</h2><p id="artist-name" class="text-sm text-gray-400 truncate">---</p></div><div class="text-right shrink-0"><div id="gameTimer" class="text-4xl font-mono font-bold text-white tabular-nums">0.00</div><div class="text-[9px] text-gray-500 uppercase mt-0.5">Sync</div></div></div>
+                <div id="timeline-container" class="mt-4 relative h-6 bg-black/30 rounded-lg w-full overflow-visible touch-none"><div id="timeline-progress" class="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 to-yellow-400 w-0 rounded-l-lg opacity-80 pointer-events-none transition-all duration-75"></div><div id="timeline-markers" class="absolute inset-0 pointer-events-none"></div><div id="cut-marker" class="absolute top-0 bottom-0 w-0.5 bg-red-500/50 pointer-events-none" style="left: 16%;"></div></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 shrink-0">
+                <button id="startRoundBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full uppercase text-sm">Start Round</button>
+                <button id="nextRoundBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm">Next Song</button>
+                <button id="revealBtn" class="bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded-xl shadow transition disabled:opacity-30 active:translate-y-1 w-full uppercase text-sm" disabled>Reveal Music</button>
+            </div>
+            <div class="flex-1 glass rounded-xl p-3 overflow-y-auto custom-scroll"><div id="playerGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
+        </div>
+    </div>
+    <div id="host-scoreboard" class="hidden"></div>
+</body>
+</html>
