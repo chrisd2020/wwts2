@@ -952,7 +952,11 @@
 
             localState.isPendingNext = true;
             localState.skippedTrackUri = localState.currentTrackUri;
+            
+            // FIX: Restore volume (in case it was faded) and ensure playback
+            await playerInstance.setVolume(0.8);
             await playerInstance.nextTrack();
+            setTimeout(() => playerInstance.resume(), 200);
         };
 
         window.hostTriggerCut = async () => {
@@ -1273,6 +1277,11 @@
                          if(a) a.innerText = track.artists[0].name;
                          const art = document.getElementById('album-art');
                          if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
+
+                         // FIX: Force resume if we switched track but stayed paused
+                         if (state.paused) {
+                             playerInstance.resume();
+                         }
 
                          // Perform Full Round Reset
                          try {
