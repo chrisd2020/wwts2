@@ -776,6 +776,11 @@
                     audioElapsed = (getServerTime() - localState.localAudioAnchor) / 1000;
                 }
 
+                if (localState.status === 'playing' && !localState.isSpotifyPlaying && !localState.isTestMode) {
+                    // Subtract 200ms to ensure we aren't faster than the host (avoid spoilers)
+                    audioElapsed = Math.max(0, audioElapsed - 0.2); 
+                }
+
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
                     audioElapsed = localState.pauseTime;
                 }
