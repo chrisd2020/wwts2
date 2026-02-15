@@ -106,7 +106,8 @@
         let isFirebaseReady = false;
         let isHostFirstLoad = true;
         let serverTimeOffset = 0; 
-        const CLIENT_LAG_COMPENSATION = 0.5; // Seconds to lag behind host to prevent spoilers
+        // Reduced buffer to 50ms to keep clocks tighter in the same room while handling minor jitter
+        const CLIENT_LAG_COMPENSATION = 0.05; 
 
         const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
         const getServerTime = () => Date.now() + serverTimeOffset;
@@ -169,9 +170,10 @@
             const syncRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'sync', user.uid);
             let bestRTT = Infinity;
             let bestOffset = 0;
-            const samples = 5;
+            // Increased samples to find the true minimum latency
+            const samples = 10;
 
-            gameLog(`Starting Sync (${samples} samples)...`);
+            gameLog(`Starting Precision Sync (${samples} samples)...`);
 
             for(let i=0; i<samples; i++) {
                 try {
@@ -184,7 +186,7 @@
                         const tServer = snap.data().t.toMillis();
                         const rtt = t1 - t0;
                         // Use a simple RTT/2 assumption, but selecting the LOWEST RTT 
-                        // minimizes the error caused by asymmetric latency.
+                        // minimizes the error caused by asymmetric latency/queuing.
                         const offset = tServer - (t0 + rtt / 2);
                         
                         if (rtt < bestRTT) {
@@ -491,6 +493,17 @@
                 console.error("Error leaving room:", e); 
             }
             handleLogout();
+        };
+
+        window.primeAudio = async () => {
+             const p = document.getElementById('player-audio-primer');
+             if(p) p.classList.add('hidden');
+             if(playerInstance) {
+                 try {
+                     await playerInstance.activateElement();
+                     gameLog("Audio engine primed", "success");
+                 } catch(e) { console.error("Prime error", e); }
+             }
         };
 
         function triggerConfetti() {
@@ -1183,6 +1196,17 @@
         }
 
         window.logout = () => { localStorage.removeItem('wwts_host_token'); localStorage.removeItem('wwts_refresh_token'); localStorage.removeItem('wwts_token_expiry'); window.location.reload(); };
+
+        window.primeAudio = async () => {
+             const p = document.getElementById('player-audio-primer');
+             if(p) p.classList.add('hidden');
+             if(playerInstance) {
+                 try {
+                     await playerInstance.activateElement();
+                     gameLog("Audio engine primed", "success");
+                 } catch(e) { console.error("Prime error", e); }
+             }
+        };
 
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
