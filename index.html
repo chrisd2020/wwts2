@@ -640,6 +640,166 @@
             }
         }
 
+        function highlightClosest(audioElapsed) {
+            const markers = document.querySelectorAll('.timeline-marker');
+            if (markers.length === 0) return;
+
+            let closestId = null;
+            let minDiff = Infinity;
+
+            markers.forEach(m => {
+                const avatar = m.querySelector('.timeline-avatar');
+                if (!avatar) return;
+                const pTime = parseFloat(m.dataset.time);
+                if (isNaN(pTime)) return;
+
+                const diff = Math.abs(audioElapsed - pTime);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestId = m.id;
+                }
+            });
+
+            markers.forEach(m => {
+                if (closestId && m.id === closestId) {
+                    m.classList.add('marker-closest');
+                } else {
+                    m.classList.remove('marker-closest');
+                }
+            });
+        }
+
+        function renderHostPlayers(data) {
+            const grid = document.getElementById('playerGrid');
+            const markersContainer = document.getElementById('timeline-markers');
+            if (!grid || !markersContainer) return;
+            markersContainer.innerHTML = ''; 
+            const players = data.players || [];
+            players.sort((a, b) => (a.buzzedAt && b.buzzedAt) ? a.buzzedAt - b.buzzedAt : (a.buzzedAt ? -1 : 1));
+
+            grid.innerHTML = players.map((p, i) => {
+                const buzzed = p.buzzedAt !== null;
+                if (buzzed && data.status !== 'lobby') {
+                    const pos = Math.min((p.buzzedAt / 60) * 100, 100);
+                    const marker = document.createElement('div');
+                    marker.id = `marker-${p.id}`; 
+                    marker.dataset.time = p.buzzedAt; 
+                    marker.className = 'timeline-marker bg-white';
+                    marker.style.left = `${pos}%`;
+                    marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name} ${p.buzzedAt.toFixed(2)}s</div>`;
+                    markersContainer.appendChild(marker);
+                }
+                const canAward = buzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
+                return `
+                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${buzzed ? 'winner-card' : ''}">
+                    <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center z-20">×</button>
+                    <div class="flex justify-between w-full text-xs text-gray-400 px-1">
+                        <span class="truncate pr-1">${p.name} (Pts: ${p.score || 0})</span>
+                        ${buzzed ? `<span class="text-yellow-500 font-bold shrink-0">#${i+1}</span>` : ''}
+                    </div>
+                    <div class="w-full py-4 rounded-lg font-black text-xl flex items-center justify-center ${buzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
+                        ${buzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
+                    </div>
+                    ${canAward ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Confirm Winner (+1)</button>` : ''}
+                </div>`;
+            }).join('');
+        }
+        
+        function updatePlayerUI(data) {
+            if (!user) return;
+            const statusEl = document.getElementById('player-status');
+            const buzzBtn = document.getElementById('player-buzz-btn');
+            const timerEl = document.getElementById('player-game-timer');
+            const winOverlay = document.getElementById('win-overlay');
+            const scoreboard = document.getElementById('player-scoreboard');
+            
+            // Safety check for elements
+            if (!statusEl || !buzzBtn) return;
+
+            // Handle Winner Overlay
+            if (data.lastWinnerId === user.uid) {
+                 if (winOverlay.classList.contains('hidden')) {
+                     winOverlay.classList.remove('hidden');
+                     winOverlay.classList.add('flex');
+                     triggerConfetti();
+                     setTimeout(() => {
+                         winOverlay.classList.add('hidden');
+                         winOverlay.classList.remove('flex');
+                     }, 5000);
+                 }
+            } else {
+                 if (!winOverlay.classList.contains('hidden') && data.status !== 'lobby') {
+                     // Hide if round started
+                     winOverlay.classList.add('hidden');
+                     winOverlay.classList.remove('flex');
+                 }
+            }
+
+            if (data.status === 'playing' || data.status === 'revealing' || data.status === 'paused_reveal') {
+                 if (!localState.timerInterval) startLoop();
+            }
+
+            if (data.status === 'lobby') {
+                statusEl.innerText = "Waiting for Host...";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "WAIT";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden";
+                if(timerEl) timerEl.innerText = "0.00";
+            } else if (data.status === 'buffering') {
+                statusEl.innerText = "Get Ready...";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "READY";
+                buzzBtn.className = "w-48 h-48 rounded-full bg-gray-700 text-white font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden animate-pulse";
+            } else if (data.status === 'playing') {
+                if (data.hasCut) {
+                    statusEl.innerText = "Music Cut! Guess!";
+                    const me = (data.players || []).find(p => p.id === user.uid);
+                    if (me && me.buzzedAt !== null) {
+                        buzzBtn.disabled = true;
+                        buzzBtn.innerText = me.buzzedAt.toFixed(2);
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-white text-black font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden transform scale-110";
+                    } else {
+                        buzzBtn.disabled = false;
+                        buzzBtn.innerText = "BUZZ";
+                        buzzBtn.className = "w-48 h-48 rounded-full bg-red-600 hover:bg-red-500 text-white font-black text-3xl shadow-[0_0_50px_rgba(220,38,38,0.6)] transition-all z-20 relative overflow-hidden active:scale-95 animate-pulse cursor-pointer";
+                    }
+                } else {
+                    statusEl.innerText = "Listen Closely...";
+                    buzzBtn.disabled = true;
+                    buzzBtn.innerText = "LISTEN";
+                    buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden";
+                }
+            } else if (data.status === 'complete') {
+                statusEl.innerText = "Round Over";
+                const me = (data.players || []).find(p => p.id === user.uid);
+                if (me && me.buzzedAt !== null) {
+                    buzzBtn.innerText = me.buzzedAt.toFixed(2);
+                    buzzBtn.className = "w-48 h-48 rounded-full bg-white text-black font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden";
+                } else {
+                    buzzBtn.innerText = "DONE";
+                    buzzBtn.className = "w-48 h-48 rounded-full bg-gray-800 text-gray-500 font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden";
+                }
+                buzzBtn.disabled = true;
+            } else if (data.status === 'revealing' || data.status === 'paused_reveal') {
+                statusEl.innerText = "Revealing Answer";
+                buzzBtn.disabled = true;
+                buzzBtn.innerText = "👀";
+            }
+
+            // Scoreboard update
+             if (scoreboard) {
+                 const sorted = [...(data.players || [])].sort((a,b) => (b.score || 0) - (a.score || 0));
+                 scoreboard.innerHTML = sorted.map((p, i) => `
+                    <div class="flex justify-between items-center py-2 border-b border-white/10 last:border-0 ${p.id === user.uid ? 'bg-white/5 -mx-2 px-2 rounded' : ''}">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-bold ${p.id === user.uid ? 'text-yellow-400' : 'text-gray-400'}">${i+1}. ${p.name}</span>
+                        </div>
+                        <span class="font-mono font-bold text-white">${p.score || 0}</span>
+                    </div>
+                 `).join('');
+            }
+        }
+
         function startLoop() {
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             function loop() {
