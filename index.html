@@ -480,6 +480,10 @@
             const timelineContainer = document.getElementById('timeline-container');
             const hostScoreboard = document.getElementById('host-scoreboard');
 
+            if (nextBtn) {
+                 nextBtn.onclick = window.hostNextSong;
+            }
+
             renderHostPlayers(data);
 
             // Re-apply highlights immediately after rendering players to prevent flicker
@@ -777,6 +781,18 @@
                 if (startBtn) startBtn.innerText = "Error - Retry"; 
                 localState.pendingRoundStart = false; // Reset if failed
             }
+        };
+
+        // NEW FUNCTION: Handles skipping to the next song
+        window.hostNextSong = async () => {
+            if (!playerInstance) return alert("Spotify not ready");
+            const btn = document.getElementById('nextRoundBtn');
+            if(btn) { btn.disabled = true; setTimeout(() => btn.disabled = false, 2000); }
+            
+            gameLog("Skipping track...", "warn");
+            localState.isPendingNext = true;
+            localState.skippedTrackUri = localState.currentTrackUri;
+            await playerInstance.nextTrack();
         };
 
         window.hostTriggerCut = async () => {
