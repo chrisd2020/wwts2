@@ -860,7 +860,8 @@
                 
                 if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
                     const hScreen = document.getElementById('host-screen');
-                    if (hScreen && !hScreen.classList.contains('hidden') && roomId && !localState.hasCut) {
+                    // ADDED !localState.localHasPaused to prevent spamming the trigger repeatedly
+                    if (hScreen && !hScreen.classList.contains('hidden') && roomId && !localState.hasCut && !localState.localHasPaused) {
                         const cutCheck = document.getElementById('autoCutToggle');
                         if (cutCheck && cutCheck.checked) window.hostTriggerCut();
                     }
@@ -960,10 +961,18 @@
         };
 
         window.hostTriggerCut = async () => {
+            if (localState.localHasPaused) return; // Immediate guard
+
+            // Trigger local audio cut immediately so it stops right away without waiting for DB
+            localTriggerAudioCut(); 
+
             gameLog("Manual Cut", "warn");
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            
+            // Optimistic update to stop the loop check immediately
+            localState.hasCut = true; 
+            
             await updateDoc(roomRef, { hasCut: true });
-            localTriggerAudioCut();
         };
 
         window.hostToggleReveal = async () => {
