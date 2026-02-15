@@ -600,6 +600,14 @@
                 revealBtn.disabled = true;
             } else if (data.status === 'complete') {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
+
+                // FORCE UPDATE HOST TIMER TO FINAL SERVER TIME (Last buzzer time)
+                const gTimer = document.getElementById('gameTimer');
+                const tProg = document.getElementById('timeline-progress');
+                const finalTime = data.pauseTime || 0;
+                if(gTimer) gTimer.innerText = finalTime.toFixed(2);
+                if(tProg) tProg.style.width = Math.min((finalTime/60)*100, 100) + '%';
+
                 roundStatus.innerText = "Guesses In";
                 startBtn.innerText = "Reset Round";
                 startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
