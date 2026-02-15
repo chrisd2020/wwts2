@@ -106,8 +106,8 @@
         let isFirebaseReady = false;
         let isHostFirstLoad = true;
         let serverTimeOffset = 0; 
-        // Reduced buffer to 50ms to keep clocks tighter in the same room while handling minor jitter
-        const CLIENT_LAG_COMPENSATION = 0.05; 
+        // INCREASED BUFFER: Tuned to 0.12s (120ms) to fix the "client ahead of host" issue
+        const CLIENT_LAG_COMPENSATION = 0.12; 
 
         const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
         const getServerTime = () => Date.now() + serverTimeOffset;
@@ -129,7 +129,8 @@
             isPendingNext: false,
             skippedTrackUri: null,
             pendingRoundStart: false,
-            pendingRoundConfig: null
+            pendingRoundConfig: null,
+            lastRenderedTime: 0 // Added for WYSIWYG buzz
         };
 
         function getFirebaseConfig() {
@@ -170,7 +171,6 @@
             const syncRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'sync', user.uid);
             let bestRTT = Infinity;
             let bestOffset = 0;
-            // Increased samples to find the true minimum latency
             const samples = 10;
 
             gameLog(`Starting Precision Sync (${samples} samples)...`);
@@ -185,8 +185,6 @@
                     if (snap.exists()) {
                         const tServer = snap.data().t.toMillis();
                         const rtt = t1 - t0;
-                        // Use a simple RTT/2 assumption, but selecting the LOWEST RTT 
-                        // minimizes the error caused by asymmetric latency/queuing.
                         const offset = tServer - (t0 + rtt / 2);
                         
                         if (rtt < bestRTT) {
@@ -850,6 +848,10 @@
                     let pElapsed = audioElapsed;
                     const me = localState.players.find(p => p.id === user.uid);
                     if (me && me.buzzedAt !== null) pElapsed = me.buzzedAt;
+                    
+                    // WYSIWYG Store: Save exactly what the player is seeing this frame
+                    localState.lastRenderedTime = pElapsed;
+
                     if (playerTimer) playerTimer.innerText = Math.max(0, pElapsed).toFixed(2);
                     if (playerProgress) playerProgress.style.width = Math.min((Math.max(0, pElapsed)/60)*100, 100) + '%';
                 }
@@ -1016,15 +1018,22 @@
         window.playerBuzz = async () => {
             const btn = document.getElementById('player-buzz-btn');
             if(btn) btn.innerText = "SENDING...";
-            let anchor = localState.localAudioAnchor || localState.startTime;
             
-            // --- FIX APPLIED HERE: USE COMPENSATED TIME ---
-            // Calculate raw time then subtract lag to match what player saw on screen
-            let rawElapsed = anchor ? (getServerTime() - anchor) / 1000 : 0;
+            // WYSIWYG (What You See Is What You Get) Fix:
+            // Instead of recalculating based on time (which may slightly differ from the last frame),
+            // use the EXACT value that was last rendered to the user's screen in startLoop.
+            // This guarantees that the number they see is the number they get.
+            let elapsed;
             
-            // Logic must match startLoop exactly to ensure what they see is what they buzz
-            const shouldCompensate = !localState.isSpotifyPlaying && !localState.isTestMode;
-            let elapsed = shouldCompensate ? Math.max(0, rawElapsed - CLIENT_LAG_COMPENSATION) : rawElapsed;
+            if (localState.status === 'playing' && localState.lastRenderedTime > 0) {
+                 elapsed = localState.lastRenderedTime;
+            } else {
+                // Fallback (e.g. if they buzz when it's already paused or logic hasn't run)
+                let anchor = localState.localAudioAnchor || localState.startTime;
+                let rawElapsed = anchor ? (getServerTime() - anchor) / 1000 : 0;
+                const shouldCompensate = !localState.isSpotifyPlaying && !localState.isTestMode;
+                elapsed = shouldCompensate ? Math.max(0, rawElapsed - CLIENT_LAG_COMPENSATION) : rawElapsed;
+            }
 
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
