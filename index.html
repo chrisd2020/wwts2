@@ -1021,8 +1021,10 @@
             // --- FIX APPLIED HERE: USE COMPENSATED TIME ---
             // Calculate raw time then subtract lag to match what player saw on screen
             let rawElapsed = anchor ? (getServerTime() - anchor) / 1000 : 0;
-            // Only apply lag if not in test mode (host doesn't lag)
-            let elapsed = (!localState.isTestMode) ? Math.max(0, rawElapsed - CLIENT_LAG_COMPENSATION) : rawElapsed;
+            
+            // Logic must match startLoop exactly to ensure what they see is what they buzz
+            const shouldCompensate = !localState.isSpotifyPlaying && !localState.isTestMode;
+            let elapsed = shouldCompensate ? Math.max(0, rawElapsed - CLIENT_LAG_COMPENSATION) : rawElapsed;
 
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
@@ -1196,17 +1198,6 @@
         }
 
         window.logout = () => { localStorage.removeItem('wwts_host_token'); localStorage.removeItem('wwts_refresh_token'); localStorage.removeItem('wwts_token_expiry'); window.location.reload(); };
-
-        window.primeAudio = async () => {
-             const p = document.getElementById('player-audio-primer');
-             if(p) p.classList.add('hidden');
-             if(playerInstance) {
-                 try {
-                     await playerInstance.activateElement();
-                     gameLog("Audio engine primed", "success");
-                 } catch(e) { console.error("Prime error", e); }
-             }
-        };
 
         let playerInit = false;
         window.onSpotifyWebPlaybackSDKReady = () => { if(token && !playerInit) initSpotifyPlayer(); };
