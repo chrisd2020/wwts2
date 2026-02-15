@@ -159,6 +159,51 @@
             window.location.reload();
         };
 
+        // --- PRECISION SYNC ---
+        window.synchronizeClock = async () => {
+            if (!user || !db) return;
+            const btn = document.getElementById('resync-btn');
+            if(btn) { btn.innerText = "Syncing..."; btn.disabled = true; }
+            
+            const syncRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'sync', user.uid);
+            let bestRTT = Infinity;
+            let bestOffset = 0;
+            const samples = 5;
+
+            gameLog(`Starting Sync (${samples} samples)...`);
+
+            for(let i=0; i<samples; i++) {
+                try {
+                    const t0 = Date.now();
+                    await setDoc(syncRef, { t: serverTimestamp() });
+                    const snap = await getDoc(syncRef);
+                    const t1 = Date.now();
+                    
+                    if (snap.exists()) {
+                        const tServer = snap.data().t.toMillis();
+                        const rtt = t1 - t0;
+                        // Use a simple RTT/2 assumption, but selecting the LOWEST RTT 
+                        // minimizes the error caused by asymmetric latency.
+                        const offset = tServer - (t0 + rtt / 2);
+                        
+                        if (rtt < bestRTT) {
+                            bestRTT = rtt;
+                            bestOffset = offset;
+                        }
+                    }
+                } catch(e) { console.error("Sync sample failed", e); }
+            }
+
+            if (bestRTT !== Infinity) {
+                serverTimeOffset = bestOffset;
+                gameLog(`Synced. RTT: ${bestRTT}ms, Offset: ${serverTimeOffset.toFixed(1)}ms`, "success");
+            } else {
+                gameLog("Sync Failed", "error");
+            }
+
+            if(btn) { btn.innerText = "Sync"; btn.disabled = false; }
+        };
+
         async function initFirebase() {
             const config = getFirebaseConfig();
             if (!config || !config.apiKey) {
@@ -189,17 +234,8 @@
                         isFirebaseReady = true;
                         gameLog("Connected to Firebase", "success");
                         
-                        try {
-                            const syncRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'sync', user.uid);
-                            const t0 = Date.now();
-                            await setDoc(syncRef, { t: serverTimestamp() });
-                            const snap = await getDoc(syncRef);
-                            const tServer = snap.data().t.toMillis();
-                            const t1 = Date.now();
-                            const latency = (t1 - t0) / 2;
-                            serverTimeOffset = tServer - (t0 + latency);
-                            gameLog(`Clock Synced. Offset: ${serverTimeOffset}ms`);
-                        } catch(e) { console.error("Sync failed", e); }
+                        // Perform Initial Sync
+                        await window.synchronizeClock();
 
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
                         if (savedRoomId) {
@@ -777,8 +813,8 @@
                 }
 
                 if (localState.status === 'playing' && !localState.isSpotifyPlaying && !localState.isTestMode) {
-                    // Subtract 200ms to ensure we aren't faster than the host (avoid spoilers)
-                    audioElapsed = Math.max(0, audioElapsed - 0.2); 
+                    // Subtract 300ms (increased from 200ms) to ensure we aren't faster than the host (avoid spoilers)
+                    audioElapsed = Math.max(0, audioElapsed - 0.3); 
                 }
 
                 if (localState.status === 'paused_reveal' || localState.status === 'complete') {
@@ -1357,9 +1393,12 @@
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
             <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
             <div class="flex items-center gap-4">
-                <div class="text-right">
-                    <div class="text-[10px] text-gray-500 uppercase font-bold">Room</div>
-                    <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none">---</div>
+                <div class="text-right flex items-center gap-2">
+                    <div>
+                        <div class="text-[10px] text-gray-500 uppercase font-bold text-right">Room</div>
+                        <div id="player-room-code" class="font-mono font-black text-yellow-400 text-xl leading-none text-right">---</div>
+                    </div>
+                    <button id="resync-btn" onclick="synchronizeClock()" class="ml-2 text-[10px] bg-white/10 hover:bg-white/20 text-white font-bold px-2 py-2 rounded h-full uppercase">Sync</button>
                 </div>
                 <button onclick="leaveRoom()" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">
                     Leave
