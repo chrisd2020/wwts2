@@ -790,6 +790,14 @@
             if(btn) { btn.disabled = true; setTimeout(() => btn.disabled = false, 2000); }
             
             gameLog("Skipping track...", "warn");
+            
+            // UI Reset to prevent lag
+            localState.localAudioAnchor = null; 
+            const t = document.getElementById('gameTimer');
+            if(t) t.innerText = "0.00";
+            const p = document.getElementById('timeline-progress');
+            if(p) p.style.width = "0%";
+
             localState.isPendingNext = true;
             localState.skippedTrackUri = localState.currentTrackUri;
             await playerInstance.nextTrack();
@@ -1073,6 +1081,7 @@
                     if (localState.isPendingNext && track.uri && track.uri !== localState.skippedTrackUri) {
                          localState.isPendingNext = false;
                          localState.skippedTrackUri = null;
+                         localState.currentTrackUri = track.uri;
                          
                          const t = document.getElementById('track-name');
                          if(t) t.innerText = track.name;
@@ -1081,8 +1090,24 @@
                          const art = document.getElementById('album-art');
                          if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
 
-                         await updateDoc(roomRef, { currentTrackUri: track.uri });
-                         gameLog("Skipped to: " + track.name, "success");
+                         // Perform Full Round Reset
+                         try {
+                             const snap = await getDoc(roomRef);
+                             const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
+                             const actualStart = getServerTime() - state.position;
+                             
+                             await updateDoc(roomRef, { 
+                                 currentTrackUri: track.uri,
+                                 status: 'playing',
+                                 startTime: new Date(actualStart),
+                                 hasCut: false,
+                                 pauseTime: 0,
+                                 players: cleanPlayers,
+                                 lastWinnerId: null
+                             });
+                             gameLog("Round Started: " + track.name, "success");
+                         } catch(e) { console.error("Reset error", e); }
+                         return;
                     }
 
                     if (localState.status !== 'lobby' && !localState.isPendingNext && localState.status !== 'buffering') {
