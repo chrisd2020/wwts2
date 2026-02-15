@@ -1019,6 +1019,22 @@
                      if (e.key === 'Enter') document.getElementById('search-btn').click();
                  });
              }
+             
+             const cutSlider = document.getElementById('cutTimeSlider');
+             if (cutSlider) {
+                 cutSlider.addEventListener('input', (e) => {
+                     const val = e.target.value;
+                     document.getElementById('cutTimeDisplay').innerText = val + 's';
+                     const marker = document.getElementById('cut-marker');
+                     if(marker) marker.style.left = (val/60)*100 + '%';
+                 });
+                 cutSlider.addEventListener('change', async (e) => {
+                     if(roomId) {
+                         const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                         await updateDoc(roomRef, { autoCutTime: parseInt(e.target.value) });
+                     }
+                 });
+             }
         });
 
         const timelineContainer = document.getElementById('timeline-container');
