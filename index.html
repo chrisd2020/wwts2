@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Win When They're Singing (Online)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Spotify SDK script removed from here to prevent race condition. It is injected via JS below. -->
     
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
@@ -105,33 +104,107 @@
         let unsubscribeRoom = null;
         let isFirebaseReady = false;
         let isHostFirstLoad = true;
+        
+        // Precision Time Sync for "In-Room" Players
         let serverTimeOffset = 0; 
-        // INCREASED BUFFER: Tuned to 0.12s (120ms) to fix the "client ahead of host" issue
-        const CLIENT_LAG_COMPENSATION = 0.12; 
 
-        const getAppId = () => typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
+        const getAppId = () => {
+            const id = typeof __app_id !== 'undefined' ? __app_id : 'wwts-game';
+            return id.split('/')[0].replace(/\//g, '-'); 
+        };
         const getServerTime = () => Date.now() + serverTimeOffset;
 
+        // --- HYBRID STATE ---
         let localState = {
             players: [],
             status: 'idle',
-            hasCut: false, 
-            startTime: 0,
-            pauseTime: 0,
+            myRole: null,             // 'host' | 'player'
+            playerMode: 'local',      // 'local' (In-room buzzer) | 'remote' (Synced Audio)
+            
             autoCutTime: 10,
+            hasCut: false,
+            startTime: 0,             // Global DB startTime
+            pauseTime: 0,             // Global DB pauseTime
+            
             isDragging: false,
             timerInterval: null,
             currentTrackUri: null,
             isTestMode: false,
-            localAudioAnchor: null, 
+            
+            // Relativistic Timing (for Host & Remote Audio Players)
+            localAudioAnchor: null,     
+            localAudioElapsed: 0,       
+            localPauseTime: 0,          
             isSpotifyPlaying: false,
             localHasPaused: false,
+            
             isPendingNext: false,
             skippedTrackUri: null,
             pendingRoundStart: false,
-            pendingRoundConfig: null,
-            lastRenderedTime: 0 // Added for WYSIWYG buzz
+
+            // Local Controller Support
+            gamepadBindings: {},        // Map of gamepadIndex -> playerId
+            listeningForGamepadFor: null,
+            lastGamepadState: {}        // Track previous button states for edge detection
         };
+
+        // --- GAMEPAD POLLING LOOP ---
+        function pollGamepads() {
+            if (localState.myRole === 'host') {
+                const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+                for (let i = 0; i < gamepads.length; i++) {
+                    const gp = gamepads[i];
+                    if (!gp) continue;
+
+                    let anyPressed = false;
+                    for (let b = 0; b < gp.buttons.length; b++) {
+                        if (gp.buttons[b].pressed) {
+                            anyPressed = true;
+                            break;
+                        }
+                    }
+
+                    // On Button Down (Edge Detection)
+                    if (anyPressed && !localState.lastGamepadState[i]) {
+                        if (localState.listeningForGamepadFor) {
+                            // Map the controller to the player waiting for it
+                            localState.gamepadBindings[i] = localState.listeningForGamepadFor;
+                            gameLog(`Controller ${i+1} bound successfully!`, 'success');
+                            localState.listeningForGamepadFor = null;
+                            renderHostPlayers(localState);
+                        } else if (localState.gamepadBindings[i]) {
+                            // This controller is bound to a player, fire a buzz for them!
+                            const pid = localState.gamepadBindings[i];
+                            window.hostBuzzForPlayer(pid);
+                        }
+                    }
+                    localState.lastGamepadState[i] = anyPressed;
+                }
+            }
+            requestAnimationFrame(pollGamepads);
+        }
+        pollGamepads();
+
+        // Gamepad binding actions
+        window.listenForGamepad = (pid, event) => {
+            if (event) event.stopPropagation();
+            if (localState.listeningForGamepadFor === pid) {
+                localState.listeningForGamepadFor = null; // Toggle off
+            } else {
+                localState.listeningForGamepadFor = pid;
+            }
+            renderHostPlayers(localState);
+        };
+
+        window.unbindGamepad = (pid, event) => {
+            if (event) event.stopPropagation();
+            const gIdx = Object.keys(localState.gamepadBindings).find(k => localState.gamepadBindings[k] === pid);
+            if (gIdx !== undefined) {
+                delete localState.gamepadBindings[gIdx];
+            }
+            renderHostPlayers(localState);
+        };
+
 
         function getFirebaseConfig() {
             try {
@@ -161,8 +234,8 @@
             localStorage.removeItem('wwts_firebase_config');
             window.location.reload();
         };
-
-        // --- PRECISION SYNC ---
+        
+        // NTP Clock Synchronization
         window.synchronizeClock = async () => {
             if (!user || !db) return;
             const btn = document.getElementById('resync-btn');
@@ -173,35 +246,25 @@
             let bestOffset = 0;
             const samples = 10;
 
-            gameLog(`Starting Precision Sync (${samples} samples)...`);
-
             for(let i=0; i<samples; i++) {
                 try {
                     const t0 = Date.now();
                     await setDoc(syncRef, { t: serverTimestamp() });
                     const snap = await getDoc(syncRef);
                     const t1 = Date.now();
-                    
                     if (snap.exists()) {
                         const tServer = snap.data().t.toMillis();
                         const rtt = t1 - t0;
                         const offset = tServer - (t0 + rtt / 2);
-                        
-                        if (rtt < bestRTT) {
-                            bestRTT = rtt;
-                            bestOffset = offset;
-                        }
+                        if (rtt < bestRTT) { bestRTT = rtt; bestOffset = offset; }
                     }
-                } catch(e) { console.error("Sync sample failed", e); }
+                } catch(e) { }
             }
 
             if (bestRTT !== Infinity) {
                 serverTimeOffset = bestOffset;
                 gameLog(`Synced. RTT: ${bestRTT}ms, Offset: ${serverTimeOffset.toFixed(1)}ms`, "success");
-            } else {
-                gameLog("Sync Failed", "error");
             }
-
             if(btn) { btn.innerText = "Sync"; btn.disabled = false; }
         };
 
@@ -234,11 +297,12 @@
                     if(user) {
                         isFirebaseReady = true;
                         gameLog("Connected to Firebase", "success");
-                        
-                        // Perform Initial Sync
                         await window.synchronizeClock();
 
                         const savedRoomId = localStorage.getItem('wwts_active_room_id');
+                        const savedPlayerMode = localStorage.getItem('wwts_player_mode') || 'local';
+                        localState.playerMode = savedPlayerMode;
+
                         if (savedRoomId) {
                             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${savedRoomId}`);
                             const snap = await getDoc(roomRef);
@@ -314,13 +378,13 @@
                     createdAt: serverTimestamp(),
                     players: [],
                     autoCutTime: 10,
+                    hasCut: false,
                     startTime: 0,
                     pauseTime: 0,
-                    hasCut: false,
-                    queuedPlaylist: null,
                     lastWinnerId: null,
                     currentTrackUri: null,
-                    isTestMode: false
+                    isTestMode: false,
+                    queuedPlaylist: null
                 });
                 gameLog("Room " + roomId + " created", "success");
                 localStorage.setItem('wwts_active_room_id', roomId);
@@ -328,18 +392,31 @@
                 document.getElementById('host-screen').classList.remove('hidden');
                 document.getElementById('roomCodeDisplay').innerText = roomId;
                 subscribeToRoom(roomId, 'host');
-            } catch(e) { gameLog("Room Creation Error: " + e.message, "error"); }
+            } catch(e) { 
+                gameLog("Room Creation Error: " + e.message, "error"); 
+                if (e.message && e.message.toLowerCase().includes("permission")) {
+                    gameLog("HINT: Update your Firestore Security Rules in the Firebase Console.", "warn");
+                    alert("Firebase Permission Denied! Update your Firestore Security Rules.");
+                }
+                if(btn) { btn.innerText = "Host New Game"; btn.disabled = false; }
+            }
         };
 
         window.joinRoom = async () => {
             if(!isFirebaseReady) return alert("Connecting to server...");
             const codeInput = document.getElementById('joinCodeInput');
             const nameInput = document.getElementById('playerNameInput');
+            const modeSelect = document.getElementById('playerModeSelect');
+            
             const code = codeInput ? codeInput.value.toUpperCase().trim() : "";
             const name = nameInput ? nameInput.value.trim() : "";
+            const mode = modeSelect ? modeSelect.value : 'local';
             
             if(code.length !== 4) return alert("Invalid Room Code");
             if(!name) return alert("Enter a name");
+
+            localState.playerMode = mode;
+            localStorage.setItem('wwts_player_mode', mode);
 
             const btn = document.getElementById('joinBtn');
             if(btn) { btn.innerText = "Joining..."; btn.disabled = true; }
@@ -377,11 +454,19 @@
                 document.getElementById('player-room-code').innerText = roomId;
                 document.getElementById('player-name-display').innerText = name;
                 subscribeToRoom(code, 'player');
-            } catch(e) { console.error("Join Error:", e); if(btn) { btn.innerText = "Join Game"; btn.disabled = false; } }
+            } catch(e) { 
+                console.error("Join Error:", e); 
+                gameLog("Join Error: " + e.message, "error");
+                if (e.message && e.message.toLowerCase().includes("permission")) {
+                    alert("Firebase Permission Denied! Update your Firestore Security Rules.");
+                }
+                if(btn) { btn.innerText = "Join Game"; btn.disabled = false; } 
+            }
         };
 
         function subscribeToRoom(id, role) {
             if(unsubscribeRoom) unsubscribeRoom();
+            localState.myRole = role;
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${id}`);
             gameLog("Connected to room " + id);
 
@@ -404,61 +489,53 @@
                 const oldTrackUri = localState.currentTrackUri;
 
                 localState.status = data.status;
-                localState.hasCut = data.hasCut;
-                localState.startTime = data.startTime?.toMillis ? data.startTime.toMillis() : (data.startTime || 0);
-                localState.pauseTime = data.pauseTime || 0;
                 localState.autoCutTime = data.autoCutTime || 10;
+                localState.hasCut = data.hasCut || false;
+                localState.startTime = typeof data.startTime === 'number' ? data.startTime : (data.startTime?.toMillis ? data.startTime.toMillis() : 0);
+                localState.pauseTime = data.pauseTime || 0;
                 localState.currentTrackUri = data.currentTrackUri;
                 localState.isTestMode = data.isTestMode || false;
 
-                if (localState.status === 'playing' && localState.hasCut && !localState.localHasPaused) {
-                    gameLog("Server triggered CUT.", "warn");
-                    localTriggerAudioCut();
-                }
-
                 const songChanged = oldTrackUri !== localState.currentTrackUri;
                 const roundRestarted = (oldStatus !== 'playing' && localState.status === 'playing');
+                
                 if (localState.status === 'lobby' || songChanged || roundRestarted) {
                     localState.localAudioAnchor = null;
+                    localState.localAudioElapsed = 0;
+                    localState.localPauseTime = 0;
                     localState.localHasPaused = false;
+                    
+                    if (role === 'player' && localState.status === 'playing') {
+                        // Remote players independently start their track
+                        if (localState.playerMode === 'remote' && playerInstance && localState.currentTrackUri) {
+                            handlePlayerAudioStart();
+                        }
+                    }
                 }
 
                 if (role === 'host' && playerInstance && localState.status === 'complete' && oldStatus === 'playing') {
                     playerInstance.pause();
                 }
 
-                if (role === 'player' && playerInstance && localState.currentTrackUri) {
-                    handlePlayerAudioSync(oldStatus, data.hasCut, oldTrackUri);
-                }
-
                 if (role === 'host') updateHostUI(data);
                 if (role === 'player') updatePlayerUI(data);
+                
             }, (error) => { gameLog("Sync Error: " + error.message, "error"); });
         }
 
-        async function handlePlayerAudioSync(oldStatus, hasCut, oldTrackUri) {
-            if (!playerInstance || !deviceId) return;
-            if (localState.status === 'playing' && localState.startTime > 0 && localState.localAudioAnchor === null) {
-                localState.localAudioAnchor = localState.startTime;
-            }
-
-            const shouldPlayOnClient = (localState.status === 'playing' && (!localState.localHasPaused || localState.isTestMode));
-            if (shouldPlayOnClient) {
-                const targetPosition = Math.max(0, (getServerTime() - localState.startTime) - 150);
-                const needsInitialPlay = oldStatus !== 'playing' || oldTrackUri !== localState.currentTrackUri;
-                if (needsInitialPlay) {
-                    try {
-                        const tokenToUse = await getValidToken();
-                        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-                            method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: targetPosition })
-                        });
-                        gameLog("Synced audio at " + (targetPosition/1000).toFixed(2) + "s", "success");
-                    } catch(e) { console.error("Sync Play Error:", e); }
-                }
-            } else if (!localState.isTestMode && localState.status !== 'revealing' && localState.status !== 'paused_reveal') { 
-                playerInstance.pause(); 
-            }
+        async function handlePlayerAudioStart() {
+            // Prevent execution if they are an in-room player relying on host audio
+            if (localState.playerMode === 'local') return;
+            
+            if (!playerInstance || !deviceId || !localState.currentTrackUri) return;
+            try {
+                const tokenToUse = await getValidToken();
+                await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+                    method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ uris: [localState.currentTrackUri], position_ms: 0 })
+                });
+                gameLog("Starting track locally at 0:00", "success");
+            } catch(e) { console.error("Sync Play Error:", e); }
         }
 
         function handleLogout() {
@@ -487,9 +564,7 @@
                     const updated = players.filter(p => p.id !== user.uid);
                     t.update(roomRef, { players: updated });
                 });
-            } catch(e) { 
-                console.error("Error leaving room:", e); 
-            }
+            } catch(e) { console.error("Error leaving room:", e); }
             handleLogout();
         };
 
@@ -528,17 +603,12 @@
             const timelineContainer = document.getElementById('timeline-container');
             const hostScoreboard = document.getElementById('host-scoreboard');
 
-            if (nextBtn) {
-                 nextBtn.onclick = window.hostNextSong;
-            }
+            if (nextBtn) nextBtn.onclick = window.hostNextSong;
 
             renderHostPlayers(data);
 
-            // Re-apply highlights immediately after rendering players to prevent flicker
-            const audioElapsed = localState.isDragging ? localState.pauseTime : 
-                (localState.localAudioAnchor !== null ? (getServerTime() - localState.localAudioAnchor) / 1000 : localState.pauseTime);
             if (data.status === 'revealing' || data.status === 'paused_reveal' || data.status === 'complete') {
-                highlightClosest(audioElapsed);
+                highlightClosest(localState.localAudioElapsed);
             }
             
             if (cutDisplay && cutSlider && document.activeElement !== cutSlider) {
@@ -580,7 +650,7 @@
                 revealBtn.className = "bg-green-600 opacity-50 cursor-not-allowed text-black font-bold py-4 rounded-xl w-full";
                 nextBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 rounded-xl shadow w-full transition uppercase text-sm";
 
-                if (data.hasCut) {
+                if (localState.localHasPaused || data.hasCut) {
                     roundStatus.innerText = "Music Cut";
                     startBtn.innerText = "Force End Round"; 
                     startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
@@ -589,7 +659,7 @@
                     roundStatus.innerText = "Playing";
                     startBtn.innerText = "Force Cut";
                     startBtn.className = "bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl shadow-lg transition active:translate-y-1 w-full";
-                    startBtn.onclick = () => window.hostTriggerCut();
+                    startBtn.onclick = () => localTriggerAudioCut();
                 }
             } else if (data.status === 'buffering') {
                 roundStatus.innerText = "Starting...";
@@ -601,10 +671,15 @@
             } else if (data.status === 'complete') {
                 if(localState.timerInterval) { cancelAnimationFrame(localState.timerInterval); localState.timerInterval = null; }
 
-                // FORCE UPDATE HOST TIMER TO FINAL SERVER TIME (Last buzzer time)
+                let finalTime = localState.localAudioElapsed || data.pauseTime || 0;
+                const players = data.players || [];
+                if (players.length > 0) {
+                     const lastBuzzer = [...players].sort((a,b) => (b.buzzedAt || 0) - (a.buzzedAt || 0))[0];
+                     if(lastBuzzer && lastBuzzer.buzzedAt) finalTime = lastBuzzer.buzzedAt;
+                }
+
                 const gTimer = document.getElementById('gameTimer');
                 const tProg = document.getElementById('timeline-progress');
-                const finalTime = data.pauseTime || 0;
                 if(gTimer) gTimer.innerText = finalTime.toFixed(2);
                 if(tProg) tProg.style.width = Math.min((finalTime/60)*100, 100) + '%';
 
@@ -639,7 +714,6 @@
                 startBtn.innerText = "Start Round";
                 startBtn.onclick = () => window.hostStartRound();
                 
-                // IF WINNER JUST AWARDED: Focus on Next Song
                 if (data.lastWinnerId) {
                     startBtn.className = "bg-gray-700 hover:bg-gray-600 text-white/50 font-bold py-4 rounded-xl transition w-full uppercase text-sm";
                     nextBtn.className = "bg-[#1DB954] hover:bg-green-400 text-black font-black py-4 rounded-xl shadow-[0_0_20px_rgba(29,185,84,0.4)] transition active:translate-y-1 w-full uppercase text-sm";
@@ -693,12 +767,15 @@
             const markersContainer = document.getElementById('timeline-markers');
             if (!grid || !markersContainer) return;
             markersContainer.innerHTML = ''; 
-            const players = data.players || [];
+            
+            // Allow `data` to be either our pure localState or the raw Firebase doc, falling back safely
+            const players = data.players || localState.players || [];
             players.sort((a, b) => (a.buzzedAt && b.buzzedAt) ? a.buzzedAt - b.buzzedAt : (a.buzzedAt ? -1 : 1));
 
             grid.innerHTML = players.map((p, i) => {
                 const buzzed = p.buzzedAt !== null;
-                if (buzzed && data.status !== 'lobby') {
+                const status = data.status || localState.status;
+                if (buzzed && status !== 'lobby') {
                     const pos = Math.min((p.buzzedAt / 60) * 100, 100);
                     const marker = document.createElement('div');
                     marker.id = `marker-${p.id}`; 
@@ -708,18 +785,41 @@
                     marker.innerHTML = `<div class="timeline-avatar bg-white text-black px-1 rounded shadow font-bold">${p.name} ${p.buzzedAt.toFixed(2)}s</div>`;
                     markersContainer.appendChild(marker);
                 }
-                const canAward = buzzed && (data.status === 'complete' || data.status === 'revealing' || data.status === 'paused_reveal');
+                const canAward = buzzed && (status === 'complete' || status === 'revealing' || status === 'paused_reveal');
+                
+                // --- HOST BUZZ LOGIC ---
+                const isTestMode = data.isTestMode !== undefined ? data.isTestMode : localState.isTestMode;
+                const hasCut = data.hasCut !== undefined ? data.hasCut : localState.hasCut;
+                const canBuzz = status === 'playing' && (localState.localHasPaused || hasCut || isTestMode) && !buzzed;
+                const buzzAction = canBuzz ? `onclick="hostBuzzForPlayer('${p.id}')"` : '';
+                const cursorClass = canBuzz ? 'cursor-pointer hover:bg-white/10 active:scale-95' : '';
+                const borderClass = canBuzz ? 'border border-transparent hover:border-red-500/50' : '';
+
+                // --- GAMEPAD BINDING UI ---
+                const boundGamepadIndex = Object.keys(localState.gamepadBindings).find(k => localState.gamepadBindings[k] === p.id);
+                const isListening = localState.listeningForGamepadFor === p.id;
+                
+                let gamepadUI = '';
+                if (isListening) {
+                    gamepadUI = `<button onclick="listenForGamepad('${p.id}', event)" class="text-[10px] bg-blue-600 animate-pulse text-white font-bold px-2 py-1.5 rounded w-full mt-1 z-20 relative">Press Any Button...</button>`;
+                } else if (boundGamepadIndex !== undefined) {
+                    gamepadUI = `<div class="flex gap-1 w-full mt-1 z-20 relative"><button class="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/50 font-bold px-2 py-1.5 rounded flex-1 cursor-default">🎮 P${parseInt(boundGamepadIndex)+1}</button><button onclick="unbindGamepad('${p.id}', event)" class="text-[10px] bg-red-500/20 hover:bg-red-500/40 text-red-400 border border-red-500/50 px-3 py-1.5 rounded font-bold">×</button></div>`;
+                } else {
+                    gamepadUI = `<button onclick="listenForGamepad('${p.id}', event)" class="text-[10px] bg-white/5 hover:bg-white/10 text-gray-400 font-bold px-2 py-1.5 rounded w-full mt-1 z-20 relative">🎮 Bind Controller</button>`;
+                }
+
                 return `
-                <div id="player-card-${p.id}" class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${buzzed ? 'winner-card' : ''}">
-                    <button onclick="removePlayer('${p.id}')" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center z-20">×</button>
+                <div id="player-card-${p.id}" ${buzzAction} class="glass p-3 flex flex-col items-center gap-2 relative transition-all duration-200 ${buzzed ? 'winner-card' : ''} ${cursorClass} ${borderClass}">
+                    <button onclick="removePlayer('${p.id}', event)" class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] rounded-full flex items-center justify-center z-20">×</button>
                     <div class="flex justify-between w-full text-xs text-gray-400 px-1">
                         <span class="truncate pr-1">${p.name} (Pts: ${p.score || 0})</span>
                         ${buzzed ? `<span class="text-yellow-500 font-bold shrink-0">#${i+1}</span>` : ''}
                     </div>
                     <div class="w-full py-4 rounded-lg font-black text-xl flex items-center justify-center ${buzzed ? 'bg-gray-700 text-gray-400' : 'bg-white/5 text-gray-600'}">
-                        ${buzzed ? p.buzzedAt.toFixed(2) + 's' : '...'}
+                        ${buzzed ? p.buzzedAt.toFixed(2) + 's' : (canBuzz ? '<span class="text-[10px] uppercase text-red-500/50 animate-pulse">Tap to Buzz</span>' : '...')}
                     </div>
-                    ${canAward ? `<button onclick="awardWin('${p.id}')" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded w-full mt-1">Confirm Winner (+1)</button>` : ''}
+                    ${gamepadUI}
+                    ${canAward ? `<button onclick="awardWin('${p.id}', event)" class="text-[10px] bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1.5 rounded w-full mt-1 z-20 relative">Confirm Winner (+1)</button>` : ''}
                 </div>`;
             }).join('');
         }
@@ -732,10 +832,21 @@
             const winOverlay = document.getElementById('win-overlay');
             const scoreboard = document.getElementById('player-scoreboard');
             
-            // Safety check for elements
             if (!statusEl || !buzzBtn) return;
 
-            // Handle Winner Overlay
+            // Handle UI layout for Local vs Remote players
+            const authPanel = document.getElementById('player-spotify-auth');
+            const statusMode = document.getElementById('player-spotify-status');
+            const primer = document.getElementById('player-audio-primer');
+
+            if (localState.playerMode === 'local') {
+                if(authPanel) authPanel.classList.add('hidden');
+                if(primer) primer.classList.add('hidden'); // In-room doesn't need to prime audio
+                if(statusMode) statusMode.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span> In-Room Buzzer`;
+            } else {
+                if(statusMode) statusMode.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Remote Audio Sync`;
+            }
+
             if (data.lastWinnerId === user.uid) {
                  if (winOverlay.classList.contains('hidden')) {
                      winOverlay.classList.remove('hidden');
@@ -748,7 +859,6 @@
                  }
             } else {
                  if (!winOverlay.classList.contains('hidden') && data.status !== 'lobby') {
-                     // Hide if round started
                      winOverlay.classList.add('hidden');
                      winOverlay.classList.remove('flex');
                  }
@@ -770,7 +880,10 @@
                 buzzBtn.innerText = "READY";
                 buzzBtn.className = "w-48 h-48 rounded-full bg-gray-700 text-white font-black text-3xl shadow-2xl transition-all z-20 relative overflow-hidden animate-pulse";
             } else if (data.status === 'playing') {
-                if (data.hasCut) {
+                // Determine if this specific client is in a "CUT" state where guessing is allowed
+                const isCut = data.hasCut || localState.localHasPaused || (localState.playerMode === 'local' && !data.isTestMode && localState.localAudioElapsed >= localState.autoCutTime);
+                
+                if (isCut) {
                     statusEl.innerText = "Music Cut! Guess!";
                     const me = (data.players || []).find(p => p.id === user.uid);
                     if (me && me.buzzedAt !== null) {
@@ -805,7 +918,6 @@
                 buzzBtn.innerText = "👀";
             }
 
-            // Scoreboard update
              if (scoreboard) {
                  const sorted = [...(data.players || [])].sort((a,b) => (b.score || 0) - (a.score || 0));
                  scoreboard.innerHTML = sorted.map((p, i) => `
@@ -823,57 +935,76 @@
             if(localState.timerInterval) cancelAnimationFrame(localState.timerInterval);
             function loop() {
                 if (localState.isDragging) { localState.timerInterval = requestAnimationFrame(loop); return; }
-                let audioElapsed = 0;
                 
-                if (localState.localAudioAnchor !== null) {
-                    audioElapsed = (getServerTime() - localState.localAudioAnchor) / 1000;
-                } else if (localState.status === 'playing' && localState.startTime > 0) {
-                    localState.localAudioAnchor = localState.startTime;
-                    audioElapsed = (getServerTime() - localState.localAudioAnchor) / 1000;
+                if (localState.status === 'playing' || localState.status === 'revealing') {
+                    // Host and Remote Players use Local Relativistic Time (based on their own Spotify playback)
+                    if (localState.myRole === 'host' || localState.playerMode === 'remote') {
+                        if (localState.localAudioAnchor !== null) {
+                            // KEEP RUNNING EVEN IF LOCALLY PAUSED so players can guess after the cut!
+                            localState.localAudioElapsed = (performance.now() - localState.localAudioAnchor) / 1000;
+                        } else {
+                            localState.localAudioElapsed = 0;
+                        }
+                    } 
+                    // Local "In-Room" Players use precision-synced Global Time (locked to the host's actual start time)
+                    else if (localState.playerMode === 'local' && localState.status === 'playing') {
+                        if (localState.startTime > 0) {
+                            localState.localAudioElapsed = (getServerTime() - localState.startTime) / 1000;
+                        } else {
+                            localState.localAudioElapsed = 0;
+                        }
+                    }
+                } else if (localState.status === 'paused_reveal' || localState.status === 'complete') {
+                    // Do nothing, UI handles static rendering
+                } else if (localState.status === 'buffering') {
+                    localState.localAudioElapsed = 0;
                 }
 
-                if (localState.status === 'playing' && !localState.isSpotifyPlaying && !localState.isTestMode) {
-                    // Force client lag to prevent spoilers and ensure "Client time < Host time"
-                    audioElapsed = Math.max(0, audioElapsed - CLIENT_LAG_COMPENSATION); 
-                }
-
-                if (localState.status === 'paused_reveal' || localState.status === 'complete') {
-                    audioElapsed = localState.pauseTime;
-                }
-
-                if (localState.status === 'buffering') {
-                    audioElapsed = 0;
-                }
-
+                // --- UI Updates ---
                 const hostTimer = document.getElementById('gameTimer');
                 const hostProgress = document.getElementById('timeline-progress');
-                if (hostTimer) hostTimer.innerText = Math.max(0, audioElapsed).toFixed(2);
-                if (hostProgress) hostProgress.style.width = Math.min((Math.max(0, audioElapsed)/60)*100, 100) + '%';
+                if (hostTimer) hostTimer.innerText = Math.max(0, localState.localAudioElapsed).toFixed(2);
+                if (hostProgress) hostProgress.style.width = Math.min((Math.max(0, localState.localAudioElapsed)/60)*100, 100) + '%';
 
                 const playerTimer = document.getElementById('player-game-timer');
                 const playerProgress = document.getElementById('player-timeline-progress');
                 if (playerTimer || playerProgress) {
-                    let pElapsed = audioElapsed;
+                    let pElapsed = localState.localAudioElapsed;
                     const me = localState.players.find(p => p.id === user.uid);
-                    if (me && me.buzzedAt !== null) pElapsed = me.buzzedAt;
+                    if (me && me.buzzedAt !== null) pElapsed = me.buzzedAt; 
                     
-                    // WYSIWYG Store: Save exactly what the player is seeing this frame
-                    localState.lastRenderedTime = pElapsed;
-
                     if (playerTimer) playerTimer.innerText = Math.max(0, pElapsed).toFixed(2);
                     if (playerProgress) playerProgress.style.width = Math.min((Math.max(0, pElapsed)/60)*100, 100) + '%';
                 }
 
-                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') highlightClosest(audioElapsed);
+                if(localState.status === 'revealing' || localState.status === 'paused_reveal' || localState.status === 'complete') {
+                    highlightClosest(localState.localAudioElapsed);
+                }
                 
-                if(localState.status === 'playing' && !localState.isTestMode && audioElapsed >= localState.autoCutTime) {
-                    const hScreen = document.getElementById('host-screen');
-                    // ADDED !localState.localHasPaused to prevent spamming the trigger repeatedly
-                    if (hScreen && !hScreen.classList.contains('hidden') && roomId && !localState.hasCut && !localState.localHasPaused) {
-                        const cutCheck = document.getElementById('autoCutToggle');
-                        if (cutCheck && cutCheck.checked) window.hostTriggerCut();
+                // --- CUT LOGIC ---
+                // For Host and Remote Players: Cut audio locally when their relative timer hits
+                if ((localState.myRole === 'host' || localState.playerMode === 'remote') && 
+                     localState.status === 'playing' && !localState.isTestMode && 
+                     localState.localAudioElapsed >= localState.autoCutTime) {
+                    if (!localState.localHasPaused) {
+                        localTriggerAudioCut();
+                        const pScreen = document.getElementById('player-screen');
+                        if (pScreen && !pScreen.classList.contains('hidden')) {
+                            updatePlayerUI({ status: 'playing', players: localState.players, isTestMode: localState.isTestMode, hasCut: localState.hasCut });
+                        }
                     }
                 }
+                
+                // For Local "In-Room" Players: Update UI when the precision timer hits
+                if (localState.playerMode === 'local' && localState.status === 'playing' && !localState.isTestMode && localState.localAudioElapsed >= localState.autoCutTime) {
+                    const pScreen = document.getElementById('player-screen');
+                    const buzzBtn = document.getElementById('player-buzz-btn');
+                    // If the buzz button says "LISTEN", it needs to transition to "BUZZ"
+                    if (pScreen && !pScreen.classList.contains('hidden') && buzzBtn && buzzBtn.disabled) {
+                        updatePlayerUI({ status: 'playing', players: localState.players, isTestMode: localState.isTestMode, hasCut: localState.hasCut });
+                    }
+                }
+
                 localState.timerInterval = requestAnimationFrame(loop);
             }
             localState.timerInterval = requestAnimationFrame(loop);
@@ -882,14 +1013,31 @@
         async function localTriggerAudioCut() {
             if (localState.localHasPaused) return;
             localState.localHasPaused = true;
-            gameLog("Audio Cut (Fading out)");
+            localState.localPauseTime = localState.localAudioElapsed;
+            
+            gameLog("Audio Cut Locally at " + localState.localPauseTime.toFixed(2) + "s", "warn");
+            
             if (localState.isTestMode) return;
             let vol = 0.8;
             const fade = setInterval(() => {
                 vol = Math.max(0, vol - 0.1); 
                 if(playerInstance) playerInstance.setVolume(vol);
-                if(vol <= 0) { clearInterval(fade); if(playerInstance) playerInstance.pause(); }
+                if(vol <= 0) { 
+                    clearInterval(fade); 
+                    if(playerInstance) playerInstance.pause(); 
+                }
             }, 40);
+
+            // Re-render UI to expose buzz buttons
+            const hScreen = document.getElementById('host-screen');
+            if (hScreen && !hScreen.classList.contains('hidden')) {
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                const snap = await getDoc(roomRef);
+                updateHostUI(snap.data());
+                
+                // If Host, also save the absolute cut to DB so In-Room players get a hard sync fallback
+                await updateDoc(roomRef, { hasCut: true, pauseTime: localState.localPauseTime });
+            }
         }
 
         window.hostStartRound = async () => {
@@ -903,17 +1051,12 @@
             const cutTime = slider ? parseInt(slider.value) : 10;
             
             try {
-                // 1. Enter Buffering State - Clients wait for precision sync
-                await updateDoc(roomRef, { status: 'buffering' });
-                
-                // 2. Set Local Flag to catch the exact moment audio starts
+                await updateDoc(roomRef, { status: 'buffering', autoCutTime: cutTime });
                 localState.pendingRoundStart = true;
                 localState.pendingRoundConfig = { autoCutTime: cutTime };
 
-                // 3. Trigger Audio
                 const snap = await getDoc(roomRef);
                 const data = snap.data();
-                localState.localAudioAnchor = null; localState.localHasPaused = false;
                 const tokenToUse = await getValidToken();
                 
                 if(playerInstance) {
@@ -926,7 +1069,6 @@
                             method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ context_uri: data.queuedPlaylist.uri })
                         });
-                        // Clear queue now that we've used it
                         await updateDoc(roomRef, { queuedPlaylist: null });
                     } else if (localState.currentTrackUri) {
                         await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
@@ -940,11 +1082,10 @@
             } catch (e) { 
                 gameLog("Start Error: " + e.message, "error"); 
                 if (startBtn) startBtn.innerText = "Error - Retry"; 
-                localState.pendingRoundStart = false; // Reset if failed
+                localState.pendingRoundStart = false; 
             }
         };
 
-        // NEW FUNCTION: Handles skipping to the next song
         window.hostNextSong = async () => {
             if (!playerInstance) return alert("Spotify not ready");
             const btn = document.getElementById('nextRoundBtn');
@@ -952,8 +1093,8 @@
             
             gameLog("Skipping track...", "warn");
             
-            // UI Reset to prevent lag
             localState.localAudioAnchor = null; 
+            localState.localAudioElapsed = 0;
             const t = document.getElementById('gameTimer');
             if(t) t.innerText = "0.00";
             const p = document.getElementById('timeline-progress');
@@ -962,38 +1103,29 @@
             localState.isPendingNext = true;
             localState.skippedTrackUri = localState.currentTrackUri;
             
-            // FIX: Restore volume (in case it was faded) and ensure playback
             await playerInstance.setVolume(0.8);
             await playerInstance.nextTrack();
             setTimeout(() => playerInstance.resume(), 200);
         };
 
-        window.hostTriggerCut = async () => {
-            if (localState.localHasPaused) return; // Immediate guard
-
-            // Trigger local audio cut immediately so it stops right away without waiting for DB
-            localTriggerAudioCut(); 
-
-            gameLog("Manual Cut", "warn");
-            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-            
-            // Optimistic update to stop the loop check immediately
-            localState.hasCut = true; 
-            
-            await updateDoc(roomRef, { hasCut: true });
-        };
-
         window.hostToggleReveal = async () => {
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             if (localState.status === 'revealing') {
-                const audioTime = localState.localAudioAnchor ? (getServerTime() - localState.localAudioAnchor) / 1000 : localState.pauseTime;
-                await updateDoc(roomRef, { status: 'paused_reveal', pauseTime: audioTime });
+                await updateDoc(roomRef, { status: 'paused_reveal' });
                 if(playerInstance) playerInstance.pause();
             } else {
-                let offset = localState.status === 'paused_reveal' ? localState.pauseTime * 1000 : 0;
-                const newStartTime = getServerTime() - offset;
-                await updateDoc(roomRef, { status: 'revealing', startTime: new Date(newStartTime) });
-                if(playerInstance) { await playerInstance.setVolume(0.8); await playerInstance.seek(offset); await playerInstance.resume(); }
+                // Fix rubber-banding: cache the scrubbed time and pre-emptively update anchor 
+                // BEFORE awaiting the database update, so the timer loop doesn't snap it back.
+                const targetTime = localState.localAudioElapsed;
+                localState.localAudioAnchor = performance.now() - (targetTime * 1000);
+
+                await updateDoc(roomRef, { status: 'revealing' });
+                
+                if(playerInstance) { 
+                    await playerInstance.setVolume(0.8); 
+                    await playerInstance.seek(targetTime * 1000); 
+                    await playerInstance.resume(); 
+                }
             }
         };
 
@@ -1002,20 +1134,25 @@
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              const snap = await getDoc(roomRef);
              const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
-             localState.localAudioAnchor = null; localState.localHasPaused = false;
-             localState.pendingRoundStart = false; // Reset pending state
-             await updateDoc(roomRef, { status: 'lobby', hasCut: false, players: cleanPlayers, pauseTime: 0, lastWinnerId: null });
+             
+             localState.localAudioAnchor = null; 
+             localState.localHasPaused = false;
+             localState.localAudioElapsed = 0;
+             localState.pendingRoundStart = false; 
+             
+             await updateDoc(roomRef, { status: 'lobby', hasCut: false, startTime: 0, pauseTime: 0, players: cleanPlayers, lastWinnerId: null });
              if(playerInstance) playerInstance.pause();
         };
 
-        window.awardWin = async (pid) => {
+        window.awardWin = async (pid, event) => {
+             if(event) event.stopPropagation();
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
              try {
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
                     const players = snap.data().players || [];
                     const updated = players.map(p => p.id === pid ? { ...p, score: (p.score || 0) + 1 } : p);
-                    t.update(roomRef, { players: updated, lastWinnerId: pid, status: 'lobby', hasCut: false, pauseTime: 0 });
+                    t.update(roomRef, { players: updated, lastWinnerId: pid, status: 'lobby', hasCut: false, startTime: 0, pauseTime: 0 });
                 });
                 gameLog("Winner Awarded!", "success");
                 localState.localAudioAnchor = null; localState.localHasPaused = false;
@@ -1025,43 +1162,86 @@
 
         window.hostEndRound = async () => {
              const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-             const time = localState.localAudioAnchor ? (getServerTime() - localState.localAudioAnchor) / 1000 : 0;
-             await updateDoc(roomRef, { status: 'complete', pauseTime: time });
+             await updateDoc(roomRef, { status: 'complete', pauseTime: localState.localAudioElapsed });
         };
 
-        window.removePlayer = async (pid) => {
+        window.removePlayer = async (pid, event) => {
+            if(event) event.stopPropagation();
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             const snap = await getDoc(roomRef);
             const updated = (snap.data().players || []).filter(p => p.id !== pid);
             await updateDoc(roomRef, { players: updated });
+            
+            // Clean up bindings if deleted
+            const gIdx = Object.keys(localState.gamepadBindings).find(k => localState.gamepadBindings[k] === pid);
+            if (gIdx !== undefined) delete localState.gamepadBindings[gIdx];
+        };
+
+        window.addLocalPlayer = async () => {
+            const input = document.getElementById('local-player-input');
+            const name = input ? input.value.trim() : "";
+            if (!name) return;
+            
+            const btn = document.getElementById('add-local-btn');
+            if (btn) btn.disabled = true;
+
+            try {
+                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+                const pid = 'local_' + Date.now();
+                const playerData = { id: pid, name: name, buzzedAt: null, score: 0, isLocal: true };
+                await updateDoc(roomRef, { players: arrayUnion(playerData) });
+                if(input) input.value = '';
+                gameLog("Added local player: " + name);
+            } catch(e) { console.error(e); } 
+            finally { if (btn) btn.disabled = false; }
+        };
+
+        window.hostBuzzForPlayer = async (pid) => {
+            const elapsed = localState.localAudioElapsed;
+            const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
+            try {
+                await runTransaction(db, async (t) => {
+                    const snap = await t.get(roomRef);
+                    const data = snap.data();
+                    
+                    if (!localState.localHasPaused && !data.isTestMode && !data.hasCut) return; 
+                    
+                    const players = data.players;
+                    const idx = players.findIndex(p => p.id === pid);
+                    
+                    if (idx !== -1 && players[idx].buzzedAt === null) {
+                        players[idx].buzzedAt = elapsed; 
+                        
+                        if (data.isTestMode) { 
+                            t.update(roomRef, { players }); 
+                        } else if (players.every(p => p.buzzedAt !== null)) { 
+                            t.update(roomRef, { players, status: 'complete', pauseTime: elapsed }); 
+                        } else { 
+                            t.update(roomRef, { players }); 
+                        }
+                    }
+                });
+                gameLog(`Buzz logged for ${pid}`, "warn");
+            } catch(e) { console.error("Host buzz failed", e); }
         };
 
         window.playerBuzz = async () => {
             const btn = document.getElementById('player-buzz-btn');
             if(btn) btn.innerText = "SENDING...";
             
-            // WYSIWYG (What You See Is What You Get) Fix:
-            // Instead of recalculating based on time (which may slightly differ from the last frame),
-            // use the EXACT value that was last rendered to the user's screen in startLoop.
-            // This guarantees that the number they see is the number they get.
-            let elapsed;
-            
-            if (localState.status === 'playing' && localState.lastRenderedTime > 0) {
-                 elapsed = localState.lastRenderedTime;
-            } else {
-                // Fallback (e.g. if they buzz when it's already paused or logic hasn't run)
-                let anchor = localState.localAudioAnchor || localState.startTime;
-                let rawElapsed = anchor ? (getServerTime() - anchor) / 1000 : 0;
-                const shouldCompensate = !localState.isSpotifyPlaying && !localState.isTestMode;
-                elapsed = shouldCompensate ? Math.max(0, rawElapsed - CLIENT_LAG_COMPENSATION) : rawElapsed;
-            }
+            // elapsed is always perfectly calculated in startLoop whether they are Local or Remote
+            const elapsed = localState.localAudioElapsed;
 
             const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
             try {
                 await runTransaction(db, async (t) => {
                     const snap = await t.get(roomRef);
                     const data = snap.data();
-                    if (!data.hasCut && !data.isTestMode) return; 
+                    
+                    // Allow buzz if local relativistic player cut, or if global room cut, or test mode
+                    const isCut = data.hasCut || (localState.playerMode === 'remote' ? localState.localHasPaused : (elapsed >= localState.autoCutTime));
+                    if (!isCut && !data.isTestMode) return; 
+                    
                     const players = data.players;
                     const idx = players.findIndex(p => p.id === user.uid);
                     if (idx !== -1 && players[idx].buzzedAt === null) {
@@ -1132,13 +1312,12 @@
             const x = e.clientX || (e.touches ? e.touches[0].clientX : 0);
             const offsetX = Math.max(0, Math.min(x - rect.left, rect.width));
             const seekTime = (offsetX / rect.width) * 60;
-            localState.pauseTime = seekTime;
+            localState.localAudioElapsed = seekTime;
             const timer = document.getElementById('gameTimer');
             if(timer) timer.innerText = seekTime.toFixed(2);
             const prog = document.getElementById('timeline-progress');
             if(prog) prog.style.width = (offsetX/rect.width*100) + '%';
             
-            // Force highlight update during scrub
             highlightClosest(seekTime);
         };
 
@@ -1150,13 +1329,12 @@
         window.onmouseup = async (e) => {
             if (localState.isDragging) {
                 localState.isDragging = false;
-                const roomRef = doc(db, 'artifacts', getAppId(), 'public', 'data', 'rooms', `wwts_room_${roomId}`);
-                if (localState.status === 'revealing') {
-                    const newStart = getServerTime() - (localState.pauseTime * 1000);
-                    await updateDoc(roomRef, { startTime: new Date(newStart), pauseTime: localState.pauseTime });
-                    if (playerInstance) playerInstance.seek(localState.pauseTime * 1000);
-                } else {
-                    await updateDoc(roomRef, { pauseTime: localState.pauseTime });
+                
+                // Pre-emptively update the anchor so the timer doesn't snap back when dragging stops
+                localState.localAudioAnchor = performance.now() - (localState.localAudioElapsed * 1000);
+
+                if (localState.status === 'revealing' || localState.status === 'paused_reveal') {
+                    if (playerInstance) playerInstance.seek(localState.localAudioElapsed * 1000);
                 }
             }
         };
@@ -1242,7 +1420,10 @@
                     await fetch('https://api.spotify.com/v1/me/player', { method: 'PUT', headers: { 'Authorization': `Bearer ${tokenToUse}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ device_ids: [device_id], play: false }) });
                 } catch(e) { console.error("Transfer error:", e); }
                 const h = document.getElementById('host-screen');
-                if (h && h.classList.contains('hidden')) { const p = document.getElementById('player-audio-primer'); if(p) p.classList.remove('hidden'); }
+                if (h && h.classList.contains('hidden') && localState.playerMode === 'remote') { 
+                    const p = document.getElementById('player-audio-primer'); 
+                    if(p) p.classList.remove('hidden'); 
+                }
             });
 
             playerInstance.addListener('player_state_changed', async state => {
@@ -1259,11 +1440,12 @@
                         const snap = await getDoc(roomRef);
                         const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
                         
+                        // We set the absolute, precision synced StartTime so local players can latch onto it!
                         const actualStart = getServerTime() - state.position;
                         
                         await updateDoc(roomRef, { 
                             status: 'playing', 
-                            startTime: new Date(actualStart), 
+                            startTime: actualStart, 
                             hasCut: false, 
                             players: cleanPlayers, 
                             autoCutTime: localState.pendingRoundConfig ? localState.pendingRoundConfig.autoCutTime : 10,
@@ -1276,8 +1458,17 @@
                     }
                 }
 
-                if (!state.paused) { localState.localAudioAnchor = getServerTime() - state.position; localState.isSpotifyPlaying = true; } 
-                else { localState.isSpotifyPlaying = false; }
+                if (!state.paused) { 
+                    // CRITICAL FIX: Only update the anchor if we haven't cut the music yet (or if we are revealing).
+                    // If we update the anchor while Spotify is fading/pausing, it freezes the stopwatch!
+                    if (localState.status !== 'playing' || !localState.localHasPaused) {
+                        localState.localAudioAnchor = performance.now() - state.position; 
+                    }
+                    localState.isSpotifyPlaying = true; 
+                } 
+                else { 
+                    localState.isSpotifyPlaying = false; 
+                }
                 
                 const h = document.getElementById('host-screen');
                 if (roomId && h && !h.classList.contains('hidden')) {
@@ -1295,12 +1486,8 @@
                          const art = document.getElementById('album-art');
                          if(art) art.innerHTML = `<img src="${track.album.images[0].url}" class="w-full h-full object-cover">`;
 
-                         // FIX: Force resume if we switched track but stayed paused
-                         if (state.paused) {
-                             playerInstance.resume();
-                         }
+                         if (state.paused) playerInstance.resume();
 
-                         // Perform Full Round Reset
                          try {
                              const snap = await getDoc(roomRef);
                              const cleanPlayers = (snap.data().players || []).map(p => ({...p, buzzedAt: null}));
@@ -1309,7 +1496,7 @@
                              await updateDoc(roomRef, { 
                                  currentTrackUri: track.uri,
                                  status: 'playing',
-                                 startTime: new Date(actualStart),
+                                 startTime: actualStart,
                                  hasCut: false,
                                  pauseTime: 0,
                                  players: cleanPlayers,
@@ -1392,7 +1579,7 @@
         const searchBtn = document.getElementById('search-btn');
         if(searchBtn) searchBtn.onclick = handleSearch;
 
-        // Dynamically inject Spotify SDK to fix race condition
+        // Dynamically inject Spotify SDK
         const spotifyScript = document.createElement('script');
         spotifyScript.src = "https://sdk.scdn.co/spotify-player.js";
         spotifyScript.async = true;
@@ -1427,6 +1614,15 @@
         <div id="lobby-main" class="hidden glass p-8 rounded-2xl w-full max-w-md space-y-5">
             <div class="space-y-3">
                 <input id="playerNameInput" type="text" placeholder="Your Name" class="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-lg font-bold text-center focus:border-yellow-400 outline-none">
+                
+                <div class="bg-black/40 border border-white/10 rounded-lg p-3">
+                    <label class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 block text-left">Your Location</label>
+                    <select id="playerModeSelect" class="w-full bg-black/60 border border-white/10 rounded p-2 text-sm text-white focus:border-yellow-400 outline-none appearance-none cursor-pointer">
+                        <option value="local">🛋️ In Room with Host (Buzzer Only)</option>
+                        <option value="remote">🎧 Remote (Play Synced Audio)</option>
+                    </select>
+                </div>
+
                 <div class="flex gap-2">
                     <input id="joinCodeInput" type="text" placeholder="CODE" maxlength="4" class="w-24 bg-black/40 border border-white/10 rounded-lg px-2 py-3 text-lg font-black text-center uppercase tracking-widest focus:border-yellow-400 outline-none">
                     <button id="joinBtn" onclick="joinRoom()" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase rounded-lg text-lg shadow-lg">Join Game</button>
@@ -1448,7 +1644,7 @@
         </div>
         <div class="h-1 w-full bg-white/5 overflow-hidden"><div id="player-timeline-progress" class="h-full bg-yellow-400 w-0 transition-all duration-75"></div></div>
         <header class="p-4 flex justify-between items-center bg-black/20 backdrop-blur-md border-b border-white/5">
-            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Audio via Host</div></div>
+            <div class="text-left"><div class="text-[10px] text-gray-500 uppercase font-bold">Player</div><div id="player-name-display" class="font-bold text-white text-lg leading-none uppercase">---</div><div id="player-spotify-status" class="mt-1 flex items-center gap-1.5 text-[9px] text-gray-500 font-bold uppercase"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Resolving...</div></div>
             <div class="flex items-center gap-4">
                 <div class="text-right flex items-center gap-2">
                     <div>
@@ -1481,7 +1677,13 @@
     <div id="host-screen" class="hidden flex-1 grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 max-w-7xl mx-auto w-full h-full">
         <div class="flex flex-col gap-4 h-full overflow-hidden">
             <div class="glass p-4 rounded-xl shrink-0"><h1 class="text-xl font-black italic text-yellow-400 leading-none">WWTS <span class="text-xs font-normal text-gray-400 not-italic block uppercase">Host</span></h1><div class="flex justify-between items-end mt-2"><div id="status-indicator" class="flex items-center gap-2 text-xs font-mono text-red-400"><span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Offline</div><div class="text-xs font-mono text-white bg-white/10 px-2 py-1 rounded">Room: <span id="roomCodeDisplay" class="font-bold text-yellow-400">----</span></div></div></div>
-            <div class="glass p-3 rounded-xl space-y-3 shrink-0"><div id="auth-panel"><button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded uppercase">Spotify Login</button><input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-yellow-500">Sync Test</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div><div class="space-y-1"><div class="flex justify-between text-[10px] text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div><input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"></div></div>
+            <div class="glass p-3 rounded-xl space-y-3 shrink-0"><div id="auth-panel"><button onclick="startLogin()" class="w-full bg-[#1DB954] text-black font-bold text-xs py-2 rounded uppercase">Spotify Login</button><input id="clientIdInput" class="client-id-input w-full bg-black/20 text-[10px] p-1 mt-1 rounded border border-white/10" placeholder="Client ID"></div>
+            <!-- LOCAL PLAYER INPUT -->
+            <div class="flex gap-2">
+                <input id="local-player-input" type="text" placeholder="Add Local Player..." class="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-green-500">
+                <button id="add-local-btn" onclick="addLocalPlayer()" class="bg-white/10 hover:bg-white/20 px-3 rounded text-xs font-bold">+</button>
+            </div>
+            <div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-gray-400">Auto-Cut</label><input type="checkbox" id="autoCutToggle" checked class="accent-green-500"></div><div class="flex justify-between items-center"><label class="text-[10px] font-bold uppercase text-yellow-500">Sync Test</label><input type="checkbox" id="syncTestToggle" onchange="toggleSyncTest(this)" class="accent-yellow-500"></div><div class="space-y-1"><div class="flex justify-between text-[10px] text-gray-300"><span>Cut after:</span><span id="cutTimeDisplay" class="font-mono text-green-400">10s</span></div><input type="range" id="cutTimeSlider" min="3" max="30" value="10" class="w-full accent-green-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"></div></div>
             <div id="debug-log-container" class="glass p-2 rounded-xl flex flex-col h-32 shrink-0"><h3 class="text-[9px] font-black uppercase text-gray-500 border-b border-white/5 pb-1 mb-1">Live Log</h3><div id="debug-log-content" class="overflow-y-auto custom-scroll flex-1 pr-1 text-[9px] font-mono leading-tight"></div></div>
             <div class="glass p-3 rounded-xl flex-1 flex flex-col min-h-0 overflow-hidden"><div class="flex gap-2 mb-2"><input id="search-input" type="text" placeholder="Playlists..." class="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-green-500"><button id="search-btn" class="bg-white/10 hover:bg-white/20 px-2 rounded text-xs">🔍</button></div><div id="results" class="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scroll"></div></div>
         </div>
